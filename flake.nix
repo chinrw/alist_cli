@@ -16,35 +16,20 @@
       rustPackagess = with pkgs; [
         # build deps
         cmake
-        ninja # rust build
-        (hiPrio gcc)
-        libgcc
         curl
         diffutils
         xz.dev
-        llvm
-        clang
-        lld
-        clang-tools
         zlib.dev
         openssl.dev
-        flex
-        bison
-        busybox
-        qemu
         mold
         perl
         pkg-config
         elfutils.dev
         ncurses.dev
-        rust-bindgen
-        pahole
         strace
         zstd
-        eza
 
         bear # generate compile commands
-        rsync # for make headers_install
         gdb
 
         # bmc deps
@@ -58,18 +43,13 @@
             tqdm
           ])))
 
-        zoxide # in case host is using zoxide
-        openssh # q-script ssh support
       ];
 
     in
     {
       devShells."${system}" = {
         default = pkgs.mkShell {
-          inputsFrom = [ pkgs.linux_latest ];
           buildInputs = rustPackagess;
-          hardeningDisable = [ "strictoverflow" "zerocallusedregs" ];
-
           shellHook = ''
             echo "loading rust env"
           '';
