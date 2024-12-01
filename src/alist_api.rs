@@ -1,22 +1,22 @@
+use anyhow::{anyhow, Context, Ok, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashSet, VecDeque};
+use std::path::Path;
 use std::sync::Arc; // Add Arc and Mutex
 use tokio::sync::Mutex; // Use the async-aware Mutex from tokio
 
-use anyhow::{anyhow, Context, Result};
+const META_SUFF: [&str; 9] = [
+    ".nfo", ".jpg", ".png", ".svg", ".ass", ".srt", ".sup", ".vtt", ".txt",
+];
+
+const FILE_STRM: [&str; 14] = [
+    ".mkv", ".iso", ".ts", ".mp4", ".avi", ".rmvb", ".wmv", ".m2ts", ".mpg", ".flv", ".rm", ".mov",
+    ".wav", ".mp3",
+];
 
 static ALIST_URL: &str = "http://192.168.0.201:5244";
-
-#[derive(Serialize, Deserialize)]
-pub(crate) struct FileInfoRequest {
-    path: String,
-    password: String,
-    page: u32,
-    per_page: u32,
-    refresh: bool,
-}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub(crate) struct FileInfo {
@@ -40,7 +40,7 @@ pub(crate) struct FileInfo {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub(crate) struct ListFolder {
+pub(crate) struct FileInfoRequest {
     path: String,
     password: String,
     page: u32,
@@ -91,11 +91,10 @@ pub(crate) struct ApiResponse {
 #[derive(Debug)]
 pub(crate) struct EntryWithPath {
     pub(crate) entry: EntryInfo,
-    pub(crate) path: String,
+    pub(crate) path_str: String,
 }
 
 pub(crate) async fn get_path_structure(path: String) -> Result<Vec<EntryWithPath>> {
-    let client = Client::new();
     let visited_paths = Arc::new(Mutex::new(HashSet::new()));
     {
         let mut visited_paths_lock = visited_paths.lock().await;
@@ -103,7 +102,7 @@ pub(crate) async fn get_path_structure(path: String) -> Result<Vec<EntryWithPath
     }
 
     // Fetch the folder contents iteratively and get all entries with paths
-    let entries_with_paths = fetch_folder_contents(path, &client, visited_paths.clone()).await?;
+    let entries_with_paths = fetch_folder_contents(path, visited_paths.clone()).await?;
 
     // Return the collected entries along with their paths
     Ok(entries_with_paths)
@@ -111,9 +110,9 @@ pub(crate) async fn get_path_structure(path: String) -> Result<Vec<EntryWithPath
 
 async fn fetch_folder_contents(
     path: String,
-    client: &Client,
     visited_paths: Arc<Mutex<HashSet<String>>>,
 ) -> Result<Vec<EntryWithPath>> {
+    let client = Client::new();
     let mut entries_with_paths = Vec::new();
     let mut directories_to_process = VecDeque::new();
     directories_to_process.push_back(path.clone());
@@ -121,7 +120,7 @@ async fn fetch_folder_contents(
     // Process the directories iteratively using a queue
     while let Some(current_path) = directories_to_process.pop_front() {
         // Prepare the JSON payload
-        let payload = ListFolder {
+        let payload = FileInfoRequest {
             path: current_path.clone(),
             password: "".to_string(),
             page: 1,
@@ -151,7 +150,7 @@ async fn fetch_folder_contents(
                     // Add this entry and its full path to the list
                     entries_with_paths.push(EntryWithPath {
                         entry: file.clone(),
-                        path: full_path.clone(),
+                        path_str: full_path.clone(),
                     });
 
                     // If the item is a directory and hasn't been visited, add it to the queue
@@ -172,3 +171,55 @@ async fn fetch_folder_contents(
 
     Ok(entries_with_paths)
 }
+
+pub(crate) async fn get_file_ext(
+    entries_with_paths: &[EntryWithPath],
+) -> Vec<(String, &EntryWithPath)> {
+    entries_with_paths
+        .iter()
+        .filter(|x| !x.entry.is_dir)
+        .filter_map(|x| {
+            Path::new(&x.path_str)
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext_str| (ext_str.to_owned(), x))
+        })
+        .collect()
+}
+
+pub(crate) async fn copy_metadata(files_with_ext: Vec<(String, &EntryWithPath)>) -> Result<()> {
+    let files_copy = files_with_ext
+        .iter()
+        .filter(|(ext, _)| META_SUFF.contains(&ext.as_str()));
+
+    let client = Client::new();
+    for file in files_copy {
+        let payload = FileInfoRequest {
+            path: file.1.path_str.clone(),
+            password: "".to_string(),
+            page: 1,
+            per_page: 0,
+            refresh: false,
+        };
+
+        let response = client
+            .post(format!("{}/api/fs/get", ALIST_URL))
+            .json(&payload)
+            .header("Content-Type", "application/json")
+            .send()
+            .await
+            .context("Request failed")?;
+    }
+
+    Ok(())
+}
+
+// async fn get_file_info() {
+//     // filter the ext we need to copy or create strim
+//     let files_copy = files_with_ext
+//         .iter()
+//         .filter(|(ext, _)| META_SUFF.contains(&ext.as_str()));
+//     let files_strm = files_with_ext
+//         .iter()
+//         .filter(|(ext, _)| FILE_STRM.contains(&ext.as_str()));
+// }
