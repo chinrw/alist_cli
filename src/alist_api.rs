@@ -1,4 +1,5 @@
-use anyhow::{anyhow, Context, Ok, Result};
+use anyhow::{anyhow, Ok, Result};
+use log::{debug, info, warn};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -8,12 +9,12 @@ use std::sync::Arc; // Add Arc and Mutex
 use tokio::sync::Mutex; // Use the async-aware Mutex from tokio
 
 const META_SUFF: [&str; 9] = [
-    ".nfo", ".jpg", ".png", ".svg", ".ass", ".srt", ".sup", ".vtt", ".txt",
+    "nfo", "jpg", "png", "svg", "ass", "srt", "sup", "vtt", "txt",
 ];
 
 const FILE_STRM: [&str; 14] = [
-    ".mkv", ".iso", ".ts", ".mp4", ".avi", ".rmvb", ".wmv", ".m2ts", ".mpg", ".flv", ".rm", ".mov",
-    ".wav", ".mp3",
+    "mkv", "iso", "ts", "mp4", "avi", "rmvb", "wmv", "m2ts", "mpg", "flv", "rm", "mov",
+    "wav", "mp3",
 ];
 
 static ALIST_URL: &str = "http://192.168.0.201:5244";
@@ -66,7 +67,7 @@ pub(crate) struct EntryInfo {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub(crate) struct FoldersInfo {
-    content: Vec<EntryInfo>,
+    content: Option<Vec<EntryInfo>>,
     total: u32,
     readme: String,
     write: bool,
@@ -85,7 +86,7 @@ pub(crate) enum ApiData {
 pub(crate) struct ApiResponse {
     code: u32,
     message: String,
-    data: ApiData,
+    data: Option<ApiData>,
 }
 
 #[derive(Debug)]
@@ -128,24 +129,24 @@ async fn fetch_folder_contents(
             refresh: false,
         };
 
-        println!("current payload:{:?}", payload);
+        debug!("Payload: {:?}", payload);
         let response = client
             .post(format!("{}/api/fs/list", ALIST_URL))
             .json(&payload)
             .header("Content-Type", "application/json")
             .send()
-            .await
-            .context("Request failed")?;
-
+            .await?;
         if response.status().is_success() {
-            let api_response: ApiResponse =
-                response.json().await.context("Failed to parse response")?;
-
-            if let ApiData::FoldersInfo(folders_info) = api_response.data {
+            let api_response: ApiResponse = response.json().await?;
+            debug!("api_response: {:?}", api_response);
+            if let Some(ApiData::FoldersInfo(folders_info)) = api_response.data {
                 // Add the current path to the list of entries
-                for file in &folders_info.content {
+                if folders_info.content.is_none() {
+                    continue;
+                }
+                for file in &folders_info.content.unwrap() {
                     let full_path = format!("{}/{}", current_path, file.name);
-                    println!("{}", full_path);
+                    debug!("{}", full_path);
 
                     // Add this entry and its full path to the list
                     entries_with_paths.push(EntryWithPath {
@@ -194,6 +195,7 @@ pub(crate) async fn copy_metadata(files_with_ext: Vec<(String, &EntryWithPath)>)
 
     let client = Client::new();
     for file in files_copy {
+        debug!("file: {:?}", file);
         let payload = FileInfoRequest {
             path: file.1.path_str.clone(),
             password: "".to_string(),
@@ -202,13 +204,27 @@ pub(crate) async fn copy_metadata(files_with_ext: Vec<(String, &EntryWithPath)>)
             refresh: false,
         };
 
+        debug!("metadata current payload:{:?}", payload);
         let response = client
             .post(format!("{}/api/fs/get", ALIST_URL))
             .json(&payload)
             .header("Content-Type", "application/json")
             .send()
-            .await
-            .context("Request failed")?;
+            .await?;
+
+        if response.status().is_success() {
+            let api_response: ApiResponse = response.json().await?;
+            debug!("metadata api_response: {:?}", api_response);
+
+            if let Some(ApiData::FileInfo(file_info)) = api_response.data {
+                let raw_url = file_info.raw_url;
+                debug!("raw_url: {}", raw_url);
+            } else {
+                return Err(anyhow!("Invalid data"));
+            }
+        } else {
+            return Err(anyhow!("Request failed"));
+        }
     }
 
     Ok(())
