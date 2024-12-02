@@ -1,20 +1,23 @@
 use anyhow::{anyhow, Ok, Result};
-use log::{debug, info, warn};
+use log::{debug, info};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 use std::sync::Arc; // Add Arc and Mutex
-use tokio::sync::Mutex; // Use the async-aware Mutex from tokio
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::Mutex;
+use url::Url; // Use the async-aware Mutex from tokio
 
 const META_SUFF: [&str; 9] = [
     "nfo", "jpg", "png", "svg", "ass", "srt", "sup", "vtt", "txt",
 ];
 
 const FILE_STRM: [&str; 14] = [
-    "mkv", "iso", "ts", "mp4", "avi", "rmvb", "wmv", "m2ts", "mpg", "flv", "rm", "mov",
-    "wav", "mp3",
+    "mkv", "iso", "ts", "mp4", "avi", "rmvb", "wmv", "m2ts", "mpg", "flv", "rm", "mov", "wav",
+    "mp3",
 ];
 
 static ALIST_URL: &str = "http://192.168.0.201:5244";
@@ -188,7 +191,10 @@ pub(crate) async fn get_file_ext(
         .collect()
 }
 
-pub(crate) async fn copy_metadata(files_with_ext: Vec<(String, &EntryWithPath)>) -> Result<()> {
+pub(crate) async fn copy_metadata(
+    files_with_ext: Vec<(String, &EntryWithPath)>,
+    output_path: &str,
+) -> Result<()> {
     let files_copy = files_with_ext
         .iter()
         .filter(|(ext, _)| META_SUFF.contains(&ext.as_str()));
@@ -219,6 +225,7 @@ pub(crate) async fn copy_metadata(files_with_ext: Vec<(String, &EntryWithPath)>)
             if let Some(ApiData::FileInfo(file_info)) = api_response.data {
                 let raw_url = file_info.raw_url;
                 debug!("raw_url: {}", raw_url);
+                download_file(&raw_url, output_path, &client).await?;
             } else {
                 return Err(anyhow!("Invalid data"));
             }
@@ -227,6 +234,42 @@ pub(crate) async fn copy_metadata(files_with_ext: Vec<(String, &EntryWithPath)>)
         }
     }
 
+    Ok(())
+}
+
+async fn download_file(
+    raw_url: &str,
+    output_path: &str, // Create an HTTP client
+    client: &Client,
+) -> Result<()> {
+    let parsed_url = Url::parse(raw_url)?;
+
+    // Get the path from the URL (e.g., "/path/to/file.zip")
+    let path = parsed_url.path();
+
+    // Extract the filename from the path (the last part after the last '/')
+    let filename = path
+        .split('/')
+        .last()
+        .ok_or(anyhow!("Unrecongnized url: {}", raw_url))?;
+
+    debug!("url path: {} filename: {}", path, filename);
+    // Send the GET request asynchronously
+    let mut response = client.get(raw_url).send().await?;
+
+    // Check if the request was successful
+    if !response.status().is_success() {
+        return Err(anyhow!("Failed to download Err: {}", response.status()));
+    }
+
+    // Open the output file for writing asynchronously
+    let mut file = File::create(output_path).await?;
+
+    while let Some(chunk) = response.chunk().await? {
+        file.write_all(&chunk).await?; // Write the chunk to the file
+    }
+
+    info!("File downloaded successfully to {}", output_path);
     Ok(())
 }
 

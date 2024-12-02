@@ -23,14 +23,12 @@ async fn main() -> Result<()> {
                 record.args()                         // The log message
             )
         })
-        .default_format()
         .init();
 
     let res = alist_api::get_path_structure("/115/bk_plain/video/电影刮削中".to_string()).await?;
-
     let files_with_ext = alist_api::get_file_ext(&res).await;
 
     info!("Start to copy metadata");
-    alist_api::copy_metadata(files_with_ext).await?;
+    alist_api::copy_metadata(files_with_ext, "~/mounts/sym_mounts/").await?;
     Ok(())
 }
