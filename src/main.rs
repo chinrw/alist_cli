@@ -1,6 +1,6 @@
 mod alist_api;
 
-use std::io::Write;
+// use std::io::Write;
 
 use anyhow::Result;
 use clap::Parser;
@@ -30,20 +30,20 @@ async fn main() -> Result<()> {
     env_logger::Builder::new()
         .parse_filters(&std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()))
         .write_style(env_logger::WriteStyle::Always)
-        .format(|buf, record| {
-            let timestamp = buf.timestamp();
-            let info_style = buf.default_level_style(log::Level::Info);
-
-            writeln!(
-                buf,
-                "[{timestamp} {info_style}{:<5}{info_style:#} {}:{} {}] {}",
-                record.level(),                       // Log level (e.g., DEBUG, INFO)
-                record.file().unwrap_or("<unknown>"), // File name
-                record.line().unwrap_or(0),           // Line number
-                record.module_path().unwrap_or("<unknown>"), // Module path
-                record.args()                         // The log message
-            )
-        })
+        // .format(|buf, record| {
+        //     let timestamp = buf.timestamp();
+        //     let info_style = buf.default_level_style(log::Level::Info);
+        //
+        //     writeln!(
+        //         buf,
+        //         "[{timestamp} {info_style}{:<5}{info_style:#} {}:{} {}] {}",
+        //         record.level(),                       // Log level (e.g., DEBUG, INFO)
+        //         record.file().unwrap_or("<unknown>"), // File name
+        //         record.line().unwrap_or(0),           // Line number
+        //         record.module_path().unwrap_or("<unknown>"), // Module path
+        //         record.args()                         // The log message
+        //     )
+        // })
         .init();
 
     let args = Cli::parse();

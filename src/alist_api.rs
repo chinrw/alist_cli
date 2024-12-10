@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha1::{Digest, Sha1};
 use tokio::{fs, io::AsyncWriteExt, sync::Mutex};
+use url::Url;
 
 use crate::ALIST_URL; // Use the async-aware Mutex from tokio
 
@@ -22,6 +23,13 @@ const FILE_STRM: [&str; 14] = [
     "mkv", "iso", "ts", "mp4", "avi", "rmvb", "wmv", "m2ts", "mpg", "flv", "rm", "mov", "wav",
     "mp3",
 ];
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(untagged)]
+enum HashObject {
+    Sha1 { sha1: String },
+    Md5 { md5: String },
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub(crate) struct FileInfo {
@@ -36,7 +44,7 @@ pub(crate) struct FileInfo {
     created: Option<String>,
     hashinfo: Option<String>,
     // #[serde(rename = "hash_info")]
-    hash_info: Option<Value>,
+    hash_info: Option<HashObject>,
     raw_url: String,
     readme: String,
     header: String,
@@ -66,7 +74,7 @@ pub(crate) struct EntryInfo {
     created: Option<String>,
     hashinfo: Option<String>,
     // #[serde(rename = "hash_info")]
-    hash_info: Option<Value>,
+    hash_info: Option<HashObject>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -142,7 +150,7 @@ async fn fetch_folder_contents(
             .await?;
         if response.status().is_success() {
             let api_response: ApiResponse = response.json().await?;
-            trace!("api_response: {:?}", api_response);
+            trace!("list api_response: {:?}", api_response);
             if let Some(ApiData::FoldersInfo(folders_info)) = api_response.data {
                 // Add the current path to the list of entries
                 if folders_info.content.is_none() {
@@ -199,7 +207,7 @@ pub(crate) async fn get_raw_url(
     client: &Client,
     file: &(String, &EntryWithPath),
 ) -> Result<String> {
-    debug!("file: {:?}", file);
+    trace!("file: {:?}", file);
     let payload = FileInfoRequest {
         path: file.1.path_str.clone(),
         password: "".to_string(),
@@ -218,7 +226,7 @@ pub(crate) async fn get_raw_url(
 
     if response.status().is_success() {
         let api_response: ApiResponse = response.json().await?;
-        debug!("metadata api_response: {:?}", api_response);
+        trace!("metadata api_response: {:?}", api_response);
 
         if let Some(ApiData::FileInfo(file_info)) = api_response.data {
             let raw_url = file_info.raw_url;
@@ -242,24 +250,39 @@ pub(crate) async fn copy_metadata(
 
     let client = Client::new();
     for file in files_copy {
-        let raw_url = get_raw_url(&client, file).await?;
         let mut local_path = PathBuf::from(output_path);
-        local_path.push(&file.1.path_str);
-        download_file(&raw_url, local_path, &file.1.entry.hash_info, &client).await?;
+        // remove the leading "/"
+        let relative_p2 = file.1.path_str.trim_start_matches('/');
+        local_path.push(relative_p2);
+
+        // Check if the local file exist
+        if Path::new(&local_path).exists() {
+            let data = fs::read(&local_path).await?;
+            let mut hasher = Sha1::new();
+            hasher.update(&data);
+            let local_sha1 = format!("{:x}", hasher.finalize()).to_uppercase();
+
+            // Check if the local file has the same sha1 with the remote one
+            match &file.1.entry.hash_info {
+                Some(HashObject::Sha1 { sha1 }) if sha1 == &local_sha1 => {
+                    info!("File exist on local path {}", local_path.display());
+                    continue;
+                }
+                Some(HashObject::Sha1 { sha1 }) => {
+                    debug!("diff local sha1 {} remote sha1 {}", local_sha1, sha1);
+                }
+                _ => {}
+            }
+        }
+
+        let raw_url = get_raw_url(&client, file).await?;
+        download_file(&raw_url, local_path, &client).await?;
     }
     Ok(())
 }
 
-async fn download_file(
-    raw_url: &str,
-    local_path: PathBuf,
-    hash_info: &Option<Value>,
-    client: &Client,
-) -> Result<()> {
-    // let parsed_url =
-    //     Url::parse(raw_url).map_err(|e| anyhow!("Failed to parse URL '{}': {}", raw_url, e))?;
-
-    debug!("Local file path: {:?}", local_path);
+async fn download_file(raw_url: &str, local_path: PathBuf, client: &Client) -> Result<()> {
+    debug!("local file path: {}", local_path.display());
 
     // Send the GET request
     let mut response = client
@@ -281,24 +304,6 @@ async fn download_file(
     if let Some(parent_dir) = local_path.parent() {
         if !parent_dir.exists() {
             fs::create_dir_all(parent_dir).await?;
-        }
-    }
-
-    // Check if the local file exist
-    if Path::new(&local_path).exists() {
-        let data = fs::read(&local_path).await?;
-        let mut hasher = Sha1::new();
-        hasher.update(&data);
-        let local_sha1 = format!("{:x}", hasher.finalize());
-
-        // Check if the local file has the same sha1 with the remote one
-        if hash_info
-            .as_ref()
-            .and_then(|v| v.as_str())
-            .map_or(false, |hash_str| hash_str == local_sha1)
-        {
-            info!("File exist on local path {}", local_path.display());
-            return Ok(());
         }
     }
 
@@ -332,15 +337,29 @@ pub(crate) async fn create_strm_file(
             let client_ref = &client;
             async move {
                 let raw_url = get_raw_url(client_ref, f).await?;
-                Ok(raw_url)
+                let mut local_path = PathBuf::from(output_path);
+                let relative_p2 = f.1.path_str.trim_start_matches('/');
+                local_path.push(relative_p2);
+                local_path.set_extension("strm");
+
+                let parsed_url = Url::parse(&raw_url)
+                    .map_err(|e| anyhow!("Failed to parse URL '{}': {}", raw_url, e))?;
+                Ok((parsed_url, local_path))
             }
         });
+
+    for file in files_strm {
+        let (raw_url, local_path) = file.await?;
+
+        // Ensure the parent directory exists
+        if let Some(parent_dir) = local_path.parent() {
+            if !parent_dir.exists() {
+                fs::create_dir_all(parent_dir).await?;
+            }
+        }
+
+        // Create or truncate the file
+        fs::write(&local_path, raw_url.as_str()).await?;
+    }
     Ok(())
 }
-
-// async fn get_file_info() {
-//     // filter the ext we need to copy or create strim
-//     let files_copy = files_with_ext
-//         .iter()
-//         .filter(|(ext, _)| META_SUFF.contains(&ext.as_str()));
-// }
