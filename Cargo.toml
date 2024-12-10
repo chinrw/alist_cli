@@ -12,3 +12,7 @@ anyhow = "1"
 env_logger = { version = "0", features = ["color"] }
 url = "2"
 log = "0"
+percent-encoding = "2"
+clap = { version = "4", features = ["derive"] }
+lazy_static = "1"
+sha1 = "0"

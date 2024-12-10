@@ -1,8 +1,29 @@
 mod alist_api;
 
-use anyhow::Result;
-use log::info;
 use std::io::Write;
+
+use anyhow::Result;
+use clap::Parser;
+use lazy_static::lazy_static;
+use log::info;
+
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+struct Cli {
+    /// memcached server addr
+    #[arg(short, long, default_value = "http://192.168.0.201:5244")]
+    server_address: String,
+
+    #[arg(short, long, required = true)]
+    url_path: String,
+
+    #[arg(short, long, required = true)]
+    local_path: String,
+}
+
+lazy_static! {
+    pub(crate) static ref ALIST_URL: String = Cli::parse().server_address;
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -25,10 +46,13 @@ async fn main() -> Result<()> {
         })
         .init();
 
-    let res = alist_api::get_path_structure("/115/bk_plain/video/电影刮削中".to_string()).await?;
+    let args = Cli::parse();
+
+    let res = alist_api::get_path_structure(args.url_path).await?;
     let files_with_ext = alist_api::get_file_ext(&res).await;
 
     info!("Start to copy metadata");
-    alist_api::copy_metadata(files_with_ext, "~/mounts/sym_mounts/").await?;
+    alist_api::copy_metadata(&files_with_ext, &args.local_path).await?;
+    alist_api::create_strm_file(&files_with_ext, &args.local_path).await?;
     Ok(())
 }

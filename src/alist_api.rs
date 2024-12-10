@@ -1,15 +1,18 @@
+use std::{
+    collections::{HashSet, VecDeque},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
 use anyhow::{anyhow, Ok, Result};
-use log::{debug, info};
+use log::{debug, info, trace};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{HashSet, VecDeque};
-use std::path::Path;
-use std::sync::Arc; // Add Arc and Mutex
-use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::Mutex;
-use url::Url; // Use the async-aware Mutex from tokio
+use sha1::{Digest, Sha1};
+use tokio::{fs, io::AsyncWriteExt, sync::Mutex};
+
+use crate::ALIST_URL; // Use the async-aware Mutex from tokio
 
 const META_SUFF: [&str; 9] = [
     "nfo", "jpg", "png", "svg", "ass", "srt", "sup", "vtt", "txt",
@@ -19,8 +22,6 @@ const FILE_STRM: [&str; 14] = [
     "mkv", "iso", "ts", "mp4", "avi", "rmvb", "wmv", "m2ts", "mpg", "flv", "rm", "mov", "wav",
     "mp3",
 ];
-
-static ALIST_URL: &str = "http://192.168.0.201:5244";
 
 #[derive(Serialize, Deserialize, Debug)]
 pub(crate) struct FileInfo {
@@ -34,7 +35,7 @@ pub(crate) struct FileInfo {
     file_type: u32, // Renamed `type` field to avoid Rust keyword conflict
     created: Option<String>,
     hashinfo: Option<String>,
-    #[serde(rename = "hash_info")]
+    // #[serde(rename = "hash_info")]
     hash_info: Option<Value>,
     raw_url: String,
     readme: String,
@@ -61,10 +62,10 @@ pub(crate) struct EntryInfo {
     sign: String,
     thumb: String,
     #[serde(rename = "type")]
-    file_type: u32, // We need to rename `type` since it's a reserved keyword in Rust
+    file_type: u32,
     created: Option<String>,
     hashinfo: Option<String>,
-    #[serde(rename = "hash_info")]
+    // #[serde(rename = "hash_info")]
     hash_info: Option<Value>,
 }
 
@@ -132,16 +133,16 @@ async fn fetch_folder_contents(
             refresh: false,
         };
 
-        debug!("Payload: {:?}", payload);
+        trace!("Payload: {:?}", payload);
         let response = client
-            .post(format!("{}/api/fs/list", ALIST_URL))
+            .post(format!("{}/api/fs/list", *ALIST_URL))
             .json(&payload)
             .header("Content-Type", "application/json")
             .send()
             .await?;
         if response.status().is_success() {
             let api_response: ApiResponse = response.json().await?;
-            debug!("api_response: {:?}", api_response);
+            trace!("api_response: {:?}", api_response);
             if let Some(ApiData::FoldersInfo(folders_info)) = api_response.data {
                 // Add the current path to the list of entries
                 if folders_info.content.is_none() {
@@ -149,7 +150,7 @@ async fn fetch_folder_contents(
                 }
                 for file in &folders_info.content.unwrap() {
                     let full_path = format!("{}/{}", current_path, file.name);
-                    debug!("{}", full_path);
+                    debug!("entry path: {}", full_path);
 
                     // Add this entry and its full path to the list
                     entries_with_paths.push(EntryWithPath {
@@ -166,10 +167,13 @@ async fn fetch_folder_contents(
                     }
                 }
             } else {
-                return Err(anyhow!("Invalid data"));
+                return Err(anyhow!("fetch_folder_contents Invalid data"));
             }
         } else {
-            return Err(anyhow!("Request failed"));
+            return Err(anyhow!(
+                "fetch_folder_contents Request failed {:?}",
+                response
+            ));
         }
     }
 
@@ -191,8 +195,45 @@ pub(crate) async fn get_file_ext(
         .collect()
 }
 
+pub(crate) async fn get_raw_url(
+    client: &Client,
+    file: &(String, &EntryWithPath),
+) -> Result<String> {
+    debug!("file: {:?}", file);
+    let payload = FileInfoRequest {
+        path: file.1.path_str.clone(),
+        password: "".to_string(),
+        page: 1,
+        per_page: 0,
+        refresh: false,
+    };
+
+    trace!("metadata current payload:{:?}", payload);
+    let response = client
+        .post(format!("{}/api/fs/get", *ALIST_URL))
+        .json(&payload)
+        .header("Content-Type", "application/json")
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        let api_response: ApiResponse = response.json().await?;
+        debug!("metadata api_response: {:?}", api_response);
+
+        if let Some(ApiData::FileInfo(file_info)) = api_response.data {
+            let raw_url = file_info.raw_url;
+            debug!("raw_url: {}", raw_url);
+            Ok(raw_url)
+        } else {
+            Err(anyhow!("Invalid data"))
+        }
+    } else {
+        Err(anyhow!("Request failed"))
+    }
+}
+
 pub(crate) async fn copy_metadata(
-    files_with_ext: Vec<(String, &EntryWithPath)>,
+    files_with_ext: &Vec<(String, &EntryWithPath)>,
     output_path: &str,
 ) -> Result<()> {
     let files_copy = files_with_ext
@@ -201,75 +242,99 @@ pub(crate) async fn copy_metadata(
 
     let client = Client::new();
     for file in files_copy {
-        debug!("file: {:?}", file);
-        let payload = FileInfoRequest {
-            path: file.1.path_str.clone(),
-            password: "".to_string(),
-            page: 1,
-            per_page: 0,
-            refresh: false,
-        };
-
-        debug!("metadata current payload:{:?}", payload);
-        let response = client
-            .post(format!("{}/api/fs/get", ALIST_URL))
-            .json(&payload)
-            .header("Content-Type", "application/json")
-            .send()
-            .await?;
-
-        if response.status().is_success() {
-            let api_response: ApiResponse = response.json().await?;
-            debug!("metadata api_response: {:?}", api_response);
-
-            if let Some(ApiData::FileInfo(file_info)) = api_response.data {
-                let raw_url = file_info.raw_url;
-                debug!("raw_url: {}", raw_url);
-                download_file(&raw_url, output_path, &client).await?;
-            } else {
-                return Err(anyhow!("Invalid data"));
-            }
-        } else {
-            return Err(anyhow!("Request failed"));
-        }
+        let raw_url = get_raw_url(&client, file).await?;
+        let mut local_path = PathBuf::from(output_path);
+        local_path.push(&file.1.path_str);
+        download_file(&raw_url, local_path, &file.1.entry.hash_info, &client).await?;
     }
-
     Ok(())
 }
 
 async fn download_file(
     raw_url: &str,
-    output_path: &str, // Create an HTTP client
+    local_path: PathBuf,
+    hash_info: &Option<Value>,
     client: &Client,
 ) -> Result<()> {
-    let parsed_url = Url::parse(raw_url)?;
+    // let parsed_url =
+    //     Url::parse(raw_url).map_err(|e| anyhow!("Failed to parse URL '{}': {}", raw_url, e))?;
 
-    // Get the path from the URL (e.g., "/path/to/file.zip")
-    let path = parsed_url.path();
+    debug!("Local file path: {:?}", local_path);
 
-    // Extract the filename from the path (the last part after the last '/')
-    let filename = path
-        .split('/')
-        .last()
-        .ok_or(anyhow!("Unrecongnized url: {}", raw_url))?;
+    // Send the GET request
+    let mut response = client
+        .get(raw_url)
+        .send()
+        .await
+        .map_err(|e| anyhow!("Request failed for '{}': {}", raw_url, e))?;
 
-    debug!("url path: {} filename: {}", path, filename);
-    // Send the GET request asynchronously
-    let mut response = client.get(raw_url).send().await?;
-
-    // Check if the request was successful
+    // Check status code
     if !response.status().is_success() {
-        return Err(anyhow!("Failed to download Err: {}", response.status()));
+        return Err(anyhow!(
+            "Server returned error status {} for '{}'",
+            response.status(),
+            raw_url
+        ));
     }
 
-    // Open the output file for writing asynchronously
-    let mut file = File::create(output_path).await?;
+    // Ensure the parent directory exists
+    if let Some(parent_dir) = local_path.parent() {
+        if !parent_dir.exists() {
+            fs::create_dir_all(parent_dir).await?;
+        }
+    }
 
+    // Check if the local file exist
+    if Path::new(&local_path).exists() {
+        let data = fs::read(&local_path).await?;
+        let mut hasher = Sha1::new();
+        hasher.update(&data);
+        let local_sha1 = format!("{:x}", hasher.finalize());
+
+        // Check if the local file has the same sha1 with the remote one
+        if hash_info
+            .as_ref()
+            .and_then(|v| v.as_str())
+            .map_or(false, |hash_str| hash_str == local_sha1)
+        {
+            info!("File exist on local path {}", local_path.display());
+            return Ok(());
+        }
+    }
+
+    // Create or truncate the file
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&local_path)
+        .await
+        .map_err(|e| anyhow!("Failed to open file '{:?}': {}", local_path, e))?;
+
+    // Stream the file contents
     while let Some(chunk) = response.chunk().await? {
-        file.write_all(&chunk).await?; // Write the chunk to the file
+        file.write_all(&chunk).await?
     }
 
-    info!("File downloaded successfully to {}", output_path);
+    info!("File downloaded successfully to {}", local_path.display());
+    Ok(())
+}
+
+pub(crate) async fn create_strm_file(
+    files_with_ext: &Vec<(String, &EntryWithPath)>,
+    output_path: &str,
+) -> Result<()> {
+    let client = Client::new();
+    let files_strm = files_with_ext
+        .iter()
+        .filter(|(ext, _)| FILE_STRM.contains(&ext.as_str()))
+        .map(|f| {
+            let client_ref = &client;
+            async move {
+                let raw_url = get_raw_url(client_ref, f).await?;
+                Ok(raw_url)
+            }
+        });
     Ok(())
 }
 
@@ -278,7 +343,4 @@ async fn download_file(
 //     let files_copy = files_with_ext
 //         .iter()
 //         .filter(|(ext, _)| META_SUFF.contains(&ext.as_str()));
-//     let files_strm = files_with_ext
-//         .iter()
-//         .filter(|(ext, _)| FILE_STRM.contains(&ext.as_str()));
 // }
