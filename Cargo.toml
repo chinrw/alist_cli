@@ -16,3 +16,9 @@ percent-encoding = "2"
 clap = { version = "4", features = ["derive"] }
 lazy_static = "1"
 sha1 = "0"
+
+[profile.release]
+codegen-units = 1
+panic = "abort"
+debug = false
+lto = true
