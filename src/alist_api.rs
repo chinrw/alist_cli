@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{anyhow, Ok, Result};
+use anyhow::{Ok, Result, anyhow};
 use log::{debug, info, trace};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -257,19 +257,21 @@ pub(crate) async fn copy_metadata(
 
         // Check if the local file exist
         if Path::new(&local_path).exists() {
-            let data = fs::read(&local_path).await?;
-            let mut hasher = Sha1::new();
-            hasher.update(&data);
-            let local_sha1 = format!("{:x}", hasher.finalize()).to_uppercase();
-
             // Check if the local file has the same sha1 with the remote one
             match &file.1.entry.hash_info {
-                Some(HashObject::Sha1 { sha1 }) if sha1 == &local_sha1 => {
-                    info!("File exist on local path {}", local_path.display());
-                    continue;
-                }
                 Some(HashObject::Sha1 { sha1 }) => {
+                    let data = fs::read(&local_path).await?;
+                    let mut hasher = Sha1::new();
+                    hasher.update(&data);
+                    let local_sha1 = format!("{:x}", hasher.finalize()).to_uppercase();
+                    if sha1 == &local_sha1 {
+                        info!("File exist on local path {}", local_path.display());
+                        continue;
+                    }
                     debug!("diff local sha1 {} remote sha1 {}", local_sha1, sha1);
+                }
+                Some(HashObject::Md5 { md5 }) => {
+                    debug!("MD5 not impl yet");
                 }
                 _ => {}
             }
