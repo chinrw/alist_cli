@@ -4,26 +4,41 @@ mod alist_api;
 
 use anyhow::Result;
 use clap::Parser;
-use lazy_static::lazy_static;
 use log::info;
+use once_cell::sync::Lazy;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
-    /// memcached server addr
-    #[arg(short, long, default_value = "http://192.168.0.201:5244")]
-    server_address: String,
-
-    #[arg(short, long, required = true)]
-    url_path: String,
-
-    #[arg(short, long, required = true)]
-    local_path: String,
+    #[command(subcommand)]
+    command: Commands,
 }
 
-lazy_static! {
-    pub(crate) static ref ALIST_URL: String = Cli::parse().server_address;
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+enum Commands {
+    #[command(arg_required_else_help = true)]
+    /// Create and refresh strm file and metadata for the Alist server
+    AutoSym {
+        /// memcached server addr
+        #[arg(short, long, default_value = "http://192.168.0.201:5244")]
+        server_address: String,
+
+        #[arg(short, long, required = true)]
+        url_path: String,
+
+        #[arg(short, long, required = true)]
+        local_path: String,
+    },
 }
+
+static ALIST_URL: Lazy<String> = Lazy::new(|| {
+    // This closure runs the first time SERVER_ADDRESS is accessed.
+    let cli = Cli::parse();
+    match cli.command {
+        Commands::AutoSym { server_address, .. } => server_address,
+    }
+});
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -47,12 +62,20 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Cli::parse();
+    match args.command {
+        Commands::AutoSym {
+            server_address: _,
+            url_path,
+            local_path,
+        } => {
+            let res = alist_api::get_path_structure(url_path).await?;
+            let files_with_ext = alist_api::get_file_ext(&res).await;
 
-    let res = alist_api::get_path_structure(args.url_path).await?;
-    let files_with_ext = alist_api::get_file_ext(&res).await;
+            info!("Start to copy metadata");
+            alist_api::copy_metadata(&files_with_ext, &local_path).await?;
+            alist_api::create_strm_file(&files_with_ext, &local_path).await?;
+        }
+    }
 
-    info!("Start to copy metadata");
-    alist_api::copy_metadata(&files_with_ext, &args.local_path).await?;
-    alist_api::create_strm_file(&files_with_ext, &args.local_path).await?;
     Ok(())
 }

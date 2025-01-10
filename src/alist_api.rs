@@ -270,7 +270,7 @@ pub(crate) async fn copy_metadata(
                     }
                     debug!("diff local sha1 {} remote sha1 {}", local_sha1, sha1);
                 }
-                Some(HashObject::Md5 { md5 }) => {
+                Some(HashObject::Md5 { .. }) => {
                     debug!("MD5 not impl yet");
                 }
                 _ => {}
