@@ -6,6 +6,7 @@ use std::{
 
 use anyhow::{Ok, Result, anyhow};
 use log::{debug, info, trace};
+use md5::Md5;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -26,9 +27,54 @@ const FILE_STRM: [&str; 14] = [
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(untagged)]
-enum HashObject {
+pub(crate) enum HashObject {
     Sha1 { sha1: String },
     Md5 { md5: String },
+}
+
+impl HashObject {
+    /// Returns the inner hash string (either the Sha1 or Md5).
+    fn as_str(&self) -> &str {
+        match self {
+            HashObject::Sha1 { sha1 } => sha1,
+            HashObject::Md5 { md5 } => md5,
+        }
+    }
+
+    pub(crate) async fn compute_file_checksum(&self, local_path: &PathBuf) -> Result<String> {
+        let data = fs::read(&local_path).await?;
+        let mut hasher = Sha1::new();
+        hasher.update(&data);
+
+        let computed = match self {
+            HashObject::Sha1 { .. } => {
+                let mut hasher = Sha1::new();
+                hasher.update(&data);
+                // finalize() consumes the hasher, returning the 20-byte digest
+                let digest = hasher.finalize();
+                format!("{:x}", digest)
+            }
+            HashObject::Md5 { .. } => {
+                let mut hasher = Md5::new();
+                hasher.update(&data);
+                let digest = hasher.finalize();
+                format!("{:x}", digest)
+            }
+        };
+        Ok(computed)
+    }
+
+    /// Computes a fresh checksum from the file and compares it to
+    /// the stored hash. Returns `true` if they match, `false` otherwise.
+    pub async fn verify_file_checksum(&self, local_path: &PathBuf) -> Result<bool> {
+        let mut res = false;
+        // Check if the local file exist
+        if Path::new(&local_path).exists() {
+            let computed = self.compute_file_checksum(local_path).await?;
+            res = computed == self.as_str();
+        }
+        Ok(res)
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -255,36 +301,53 @@ pub(crate) async fn copy_metadata(
         let relative_p2 = file.1.path_str.trim_start_matches('/');
         local_path.push(relative_p2);
 
-        // Check if the local file exist
-        if Path::new(&local_path).exists() {
-            // Check if the local file has the same sha1 with the remote one
-            match &file.1.entry.hash_info {
-                Some(HashObject::Sha1 { sha1 }) => {
-                    let data = fs::read(&local_path).await?;
-                    let mut hasher = Sha1::new();
-                    hasher.update(&data);
-                    let local_sha1 = format!("{:x}", hasher.finalize()).to_uppercase();
-                    if sha1 == &local_sha1 {
-                        info!("File exist on local path {}", local_path.display());
-                        continue;
-                    }
-                    debug!("diff local sha1 {} remote sha1 {}", local_sha1, sha1);
-                }
-                Some(HashObject::Md5 { .. }) => {
-                    debug!("MD5 not impl yet");
-                }
-                _ => {}
-            }
-        }
-
         let raw_url = get_raw_url(&client, file).await?;
-        download_file(&raw_url, local_path, &client).await?;
+        download_file_with_retries(&raw_url, local_path, &client, &file.1.entry.hash_info).await?;
     }
     Ok(())
 }
 
-async fn download_file(raw_url: &str, local_path: PathBuf, client: &Client) -> Result<()> {
+pub async fn download_file_with_retries(
+    raw_url: &str,
+    local_path: PathBuf,
+    client: &Client,
+    checksum: &Option<HashObject>,
+) -> Result<()> {
+    for attempt in 1..=3 {
+        match attempt_download_file(raw_url, local_path.clone(), client, checksum).await {
+            std::result::Result::Ok(_) => return Ok(()),
+            Err(e) if attempt < 3 => info!(
+                "Download attempt #{} for '{}' failed: {}. Retrying...",
+                attempt, raw_url, e
+            ),
+
+            Err(e) => {
+                return Err(anyhow!(
+                    "Failed after {} attempts for '{}': {}",
+                    attempt,
+                    raw_url,
+                    e
+                ));
+            }
+        }
+    }
+    // Should never reach here unless the loop is changed.
+    unreachable!("All retry attempts have returned by this point.");
+}
+
+async fn attempt_download_file(
+    raw_url: &str,
+    local_path: PathBuf,
+    client: &Client,
+    checksum: &Option<HashObject>,
+) -> Result<()> {
     debug!("local file path: {}", local_path.display());
+
+    if let Some(checksum_obj) = checksum {
+        if checksum_obj.verify_file_checksum(&local_path).await? {
+            return Ok(());
+        }
+    }
 
     // Send the GET request
     let mut response = client
@@ -323,7 +386,17 @@ async fn download_file(raw_url: &str, local_path: PathBuf, client: &Client) -> R
         file.write_all(&chunk).await?
     }
 
-    info!("File downloaded successfully to {}", local_path.display());
+    // Verify the file checksum (if provided)
+    if let Some(checksum_obj) = checksum {
+        let verified = checksum_obj.verify_file_checksum(&local_path).await?;
+        if !verified {
+            return Err(anyhow!(
+                "Checksum mismatch. Downloaded file does not match the expected hash."
+            ));
+        }
+        info!("Downloaded file verified successfully against the provided hash.");
+    }
+
     Ok(())
 }
 
