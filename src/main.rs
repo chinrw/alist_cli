@@ -7,7 +7,6 @@ use anyhow::Result;
 use clap::Parser;
 use log::info;
 use once_cell::sync::Lazy;
-use url::Url;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -34,9 +33,12 @@ enum Commands {
         local_path: String,
     },
     Download {
+        #[arg(short, long, default_value = "http://192.168.0.201:5244")]
+        server_address: String,
+
         /// alist server addr
         #[arg(short, long, required = true)]
-        url: String,
+        url_path: String,
 
         /// download path directory
         #[arg(short, long, required = true)]
@@ -49,11 +51,7 @@ static ALIST_URL: Lazy<String> = Lazy::new(|| {
     let cli = Cli::parse();
     match cli.command {
         Commands::AutoSym { server_address, .. } => server_address,
-        Commands::Download { url, .. } => Url::parse(&url)
-            .expect("Wrong Server Url format")
-            .host_str()
-            .expect("Wrong Server Url format")
-            .to_string(),
+        Commands::Download { server_address, .. } => server_address,
     }
 });
 
@@ -92,10 +90,12 @@ async fn main() -> Result<()> {
             alist_api::copy_metadata(&files_with_ext, &local_path).await?;
             alist_api::create_strm_file(&files_with_ext, &local_path).await?;
         }
-        Commands::Download { url, local_path } => {
-            let full_url = Url::parse(&url)?;
-
-            download::test(full_url.path().to_string(), local_path).await?;
+        Commands::Download {
+            server_address,
+            url_path,
+            local_path,
+        } => {
+            download::download_folders(url_path, local_path).await?;
         }
     }
 

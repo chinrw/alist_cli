@@ -71,6 +71,11 @@ impl HashObject {
         // Check if the local file exist
         if Path::new(&local_path).exists() {
             let computed = self.compute_file_checksum(local_path).await?;
+            debug!(
+                "local checksum: {} remote file checksum: {}",
+                computed,
+                self.as_str()
+            );
             res = computed == self.as_str();
         }
         Ok(res)
@@ -118,9 +123,9 @@ pub(crate) struct EntryInfo {
     #[serde(rename = "type")]
     file_type: u32,
     created: Option<String>,
-    hashinfo: Option<String>,
+    pub(crate) hashinfo: Option<String>,
     // #[serde(rename = "hash_info")]
-    hash_info: Option<HashObject>,
+    pub(crate) hash_info: Option<HashObject>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -249,13 +254,10 @@ pub(crate) async fn get_file_ext(
         .collect()
 }
 
-pub(crate) async fn get_raw_url(
-    client: &Client,
-    file: &(String, &EntryWithPath),
-) -> Result<String> {
-    trace!("file: {:?}", file);
+pub(crate) async fn get_raw_url(client: &Client, entry: &EntryWithPath) -> Result<String> {
+    trace!("file: {:?}", entry);
     let payload = FileInfoRequest {
-        path: file.1.path_str.clone(),
+        path: entry.path_str.clone(),
         password: "".to_string(),
         page: 1,
         per_page: 0,
@@ -301,10 +303,47 @@ pub(crate) async fn copy_metadata(
         let relative_p2 = file.1.path_str.trim_start_matches('/');
         local_path.push(relative_p2);
 
-        let raw_url = get_raw_url(&client, file).await?;
+        let raw_url = get_raw_url(&client, file.1).await?;
         download_file_with_retries(&raw_url, local_path, &client, &file.1.entry.hash_info).await?;
     }
     Ok(())
+}
+
+pub fn encrypt_md5(md5str: &str) -> String {
+    // 1) Rearrange the string: [8..16] + [0..8] + [24..32] + [16..24]
+    let rearranged = format!(
+        "{}{}{}{}",
+        &md5str[8..16],
+        &md5str[0..8],
+        &md5str[24..32],
+        &md5str[16..24],
+    );
+
+    // 2) Build `encryptstr`: for each char, parse as hex digit, XOR with (15 & index), format as hex
+    let mut encryptstr: String = rearranged
+        .chars()
+        .enumerate()
+        .map(|(i, ch)| {
+            let val = ch
+                .to_digit(16)
+                .expect("Character in rearranged MD5 string wasn't valid hex.");
+            format!("{:x}", val ^ (15 & i as u32))
+        })
+        .collect();
+
+    // 3) Modify the 10th character (index 9): encryptstr[9] => 'g' + hexDigit
+    let digit_9 = encryptstr
+        .chars()
+        .nth(9)
+        .expect("encryptstr shorter than expected");
+    let val_9 = digit_9
+        .to_digit(16)
+        .expect("Character at index 9 wasn't valid hex.");
+    let new_char = std::char::from_u32(('g' as u32) + val_9)
+        .expect("Adding offset to 'g' went out of valid Unicode range.");
+    encryptstr.replace_range(9..10, &new_char.to_string());
+
+    encryptstr
 }
 
 pub async fn download_file_with_retries(
@@ -341,7 +380,7 @@ async fn attempt_download_file(
     client: &Client,
     checksum: &Option<HashObject>,
 ) -> Result<()> {
-    debug!("local file path: {}", local_path.display());
+    debug!("Download to local file path: {}", local_path.display());
 
     if let Some(checksum_obj) = checksum {
         if checksum_obj.verify_file_checksum(&local_path).await? {
@@ -411,7 +450,7 @@ pub(crate) async fn create_strm_file(
         .map(|f| {
             let client_ref = &client;
             async move {
-                let raw_url = get_raw_url(client_ref, f).await?;
+                let raw_url = get_raw_url(client_ref, f.1).await?;
                 let mut local_path = PathBuf::from(output_path);
                 let relative_p2 = f.1.path_str.trim_start_matches('/');
                 local_path.push(relative_p2);
