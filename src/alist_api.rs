@@ -216,7 +216,7 @@ async fn fetch_folder_contents(
                     entries_with_paths.push(EntryWithPath {
                         entry: file.clone(),
                         path_str: full_path.clone(),
-                        provider: folders_info.provider.clone()
+                        provider: folders_info.provider.clone(),
                     });
 
                     // If the item is a directory and hasn't been visited, add it to the queue
@@ -377,8 +377,11 @@ pub async fn download_file_with_retries(
     unreachable!("All retry attempts have returned by this point.");
 }
 
-fn provider_checksum(provider: string) -> bool{
-     true
+pub(crate) fn provider_checksum(entry: &EntryWithPath) -> bool {
+    if entry.provider == "BaiduNetdisk" {
+        return false;
+    }
+    true
 }
 
 async fn attempt_download_file(

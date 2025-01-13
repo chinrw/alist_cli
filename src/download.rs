@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use anyhow::{Ok, Result};
 use reqwest::Client;
 
-use crate::alist_api::{download_file_with_retries, get_path_structure, get_raw_url};
+use crate::alist_api::{
+    download_file_with_retries, get_path_structure, get_raw_url, provider_checksum,
+};
 
 pub(super) async fn download_folders(url_path: String, local_path: &str) -> Result<()> {
     let res = get_path_structure(url_path).await?;
@@ -17,8 +19,17 @@ pub(super) async fn download_folders(url_path: String, local_path: &str) -> Resu
 
         let raw_url = get_raw_url(&client, &f).await?;
 
-        // Download and retry on failure
-        download_file_with_retries(&raw_url, local_path_buf, &client, &f.entry.hash_info).await?;
+        download_file_with_retries(
+            &raw_url,
+            local_path_buf,
+            &client,
+            if provider_checksum(&f) {
+                &f.entry.hash_info
+            } else {
+                &None
+            },
+        )
+        .await?;
     }
 
     Ok(())
