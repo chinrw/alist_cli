@@ -156,6 +156,7 @@ pub(crate) struct ApiResponse {
 pub(crate) struct EntryWithPath {
     pub(crate) entry: EntryInfo,
     pub(crate) path_str: String,
+    pub(crate) provider: String,
 }
 
 pub(crate) async fn get_path_structure(path: String) -> Result<Vec<EntryWithPath>> {
@@ -215,6 +216,7 @@ async fn fetch_folder_contents(
                     entries_with_paths.push(EntryWithPath {
                         entry: file.clone(),
                         path_str: full_path.clone(),
+                        provider: folders_info.provider.clone()
                     });
 
                     // If the item is a directory and hasn't been visited, add it to the queue
@@ -309,7 +311,9 @@ pub(crate) async fn copy_metadata(
     Ok(())
 }
 
-pub fn encrypt_md5(md5str: &str) -> String {
+/// This function is used by BAIDU_NETDISK to encryptstr md5sum res to match the md5 from provider
+/// However, this may not provide the correct md5
+pub fn _encrypt_md5(md5str: &str) -> String {
     // 1) Rearrange the string: [8..16] + [0..8] + [24..32] + [16..24]
     let rearranged = format!(
         "{}{}{}{}",
@@ -332,11 +336,10 @@ pub fn encrypt_md5(md5str: &str) -> String {
         .collect();
 
     // 3) Modify the 10th character (index 9): encryptstr[9] => 'g' + hexDigit
-    let digit_9 = encryptstr
+    let val_9 = encryptstr
         .chars()
         .nth(9)
-        .expect("encryptstr shorter than expected");
-    let val_9 = digit_9
+        .expect("encryptstr shorter than expected")
         .to_digit(16)
         .expect("Character at index 9 wasn't valid hex.");
     let new_char = std::char::from_u32(('g' as u32) + val_9)
@@ -372,6 +375,10 @@ pub async fn download_file_with_retries(
     }
     // Should never reach here unless the loop is changed.
     unreachable!("All retry attempts have returned by this point.");
+}
+
+fn provider_checksum(provider: string) -> bool{
+     true
 }
 
 async fn attempt_download_file(

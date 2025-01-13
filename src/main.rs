@@ -1,8 +1,6 @@
 mod alist_api;
 mod download;
 
-// use std::io::Write;
-
 use anyhow::Result;
 use clap::Parser;
 use log::info;
@@ -11,6 +9,18 @@ use once_cell::sync::Lazy;
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
+    /// alist server addr
+    #[arg(
+        short,
+        long,
+        global = true,
+        default_value = "http://192.168.0.201:5244"
+    )]
+    server_address: String,
+
+    #[arg(short, long, global = true, default_value = "/")]
+    url_path: String,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -21,25 +31,11 @@ enum Commands {
     #[command(arg_required_else_help = true)]
     /// Create and refresh strm file and metadata for the Alist server
     AutoSym {
-        /// alist server addr
-        #[arg(short, long, default_value = "http://192.168.0.201:5244")]
-        server_address: String,
-
-        #[arg(short, long, required = true)]
-        url_path: String,
-
         /// download path directory
         #[arg(short, long, required = true)]
         local_path: String,
     },
     Download {
-        #[arg(short, long, default_value = "http://192.168.0.201:5244")]
-        server_address: String,
-
-        /// alist server addr
-        #[arg(short, long, required = true)]
-        url_path: String,
-
         /// download path directory
         #[arg(short, long, required = true)]
         local_path: String,
@@ -48,11 +44,7 @@ enum Commands {
 
 static ALIST_URL: Lazy<String> = Lazy::new(|| {
     // This closure runs the first time SERVER_ADDRESS is accessed.
-    let cli = Cli::parse();
-    match cli.command {
-        Commands::AutoSym { server_address, .. } => server_address,
-        Commands::Download { server_address, .. } => server_address,
-    }
+    Cli::parse().server_address
 });
 
 #[tokio::main]
@@ -78,24 +70,16 @@ async fn main() -> Result<()> {
 
     let args = Cli::parse();
     match args.command {
-        Commands::AutoSym {
-            server_address: _,
-            url_path,
-            local_path,
-        } => {
-            let res = alist_api::get_path_structure(url_path).await?;
+        Commands::AutoSym { local_path } => {
+            let res = alist_api::get_path_structure(args.url_path).await?;
             let files_with_ext = alist_api::get_file_ext(&res).await;
 
             info!("Start to copy metadata");
             alist_api::copy_metadata(&files_with_ext, &local_path).await?;
             alist_api::create_strm_file(&files_with_ext, &local_path).await?;
         }
-        Commands::Download {
-            server_address,
-            url_path,
-            local_path,
-        } => {
-            download::download_folders(url_path, local_path).await?;
+        Commands::Download { local_path } => {
+            download::download_folders(args.url_path, &local_path).await?;
         }
     }
 
