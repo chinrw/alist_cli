@@ -1,8 +1,7 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Ok, Result};
 use reqwest::Client;
-use std::sync::Arc;
 use tokio::task::JoinSet;
 
 use crate::alist_api::{

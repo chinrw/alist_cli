@@ -306,7 +306,8 @@ pub(crate) async fn copy_metadata(
         local_path.push(relative_p2);
 
         let raw_url = get_raw_url(&client, file.1).await?;
-        download_file_with_retries(raw_url, local_path, &client, file.1.entry.hash_info.clone()).await?;
+        download_file_with_retries(raw_url, local_path, &client, file.1.entry.hash_info.clone())
+            .await?;
     }
     Ok(())
 }
@@ -356,7 +357,14 @@ pub async fn download_file_with_retries(
     checksum: Option<HashObject>,
 ) -> Result<()> {
     for attempt in 1..=3 {
-        match attempt_download_file(&raw_url, local_path.clone(), client.clone(), checksum.clone()).await {
+        match attempt_download_file(
+            &raw_url,
+            local_path.clone(),
+            client.clone(),
+            checksum.clone(),
+        )
+        .await
+        {
             std::result::Result::Ok(_) => return Ok(()),
             Err(e) if attempt < 3 => info!(
                 "Download attempt #{} for '{}' failed: {}. Retrying...",
