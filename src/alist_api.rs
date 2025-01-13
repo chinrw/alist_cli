@@ -34,10 +34,10 @@ pub(crate) enum HashObject {
 
 impl HashObject {
     /// Returns the inner hash string (either the Sha1 or Md5).
-    fn as_str(&self) -> &str {
+    fn as_hash_str(&self) -> String {
         match self {
-            HashObject::Sha1 { sha1 } => sha1,
-            HashObject::Md5 { md5 } => md5,
+            HashObject::Sha1 { sha1 } => sha1.to_lowercase(),
+            HashObject::Md5 { md5 } => md5.to_lowercase(),
         }
     }
 
@@ -74,9 +74,9 @@ impl HashObject {
             debug!(
                 "local checksum: {} remote file checksum: {}",
                 computed,
-                self.as_str()
+                self.as_hash_str()
             );
-            res = computed == self.as_str();
+            res = computed == self.as_hash_str();
         }
         Ok(res)
     }
@@ -298,7 +298,7 @@ pub(crate) async fn copy_metadata(
         .iter()
         .filter(|(ext, _)| META_SUFF.contains(&ext.as_str()));
 
-    let client = Client::new();
+    let client = Arc::new(Client::new());
     for file in files_copy {
         let mut local_path = PathBuf::from(output_path);
         // remove the leading "/"
@@ -306,7 +306,7 @@ pub(crate) async fn copy_metadata(
         local_path.push(relative_p2);
 
         let raw_url = get_raw_url(&client, file.1).await?;
-        download_file_with_retries(&raw_url, local_path, &client, &file.1.entry.hash_info).await?;
+        download_file_with_retries(raw_url, local_path, &client, file.1.entry.hash_info.clone()).await?;
     }
     Ok(())
 }
@@ -350,13 +350,13 @@ pub fn _encrypt_md5(md5str: &str) -> String {
 }
 
 pub async fn download_file_with_retries(
-    raw_url: &str,
+    raw_url: String,
     local_path: PathBuf,
-    client: &Client,
-    checksum: &Option<HashObject>,
+    client: &Arc<Client>,
+    checksum: Option<HashObject>,
 ) -> Result<()> {
     for attempt in 1..=3 {
-        match attempt_download_file(raw_url, local_path.clone(), client, checksum).await {
+        match attempt_download_file(&raw_url, local_path.clone(), client.clone(), checksum.clone()).await {
             std::result::Result::Ok(_) => return Ok(()),
             Err(e) if attempt < 3 => info!(
                 "Download attempt #{} for '{}' failed: {}. Retrying...",
@@ -387,13 +387,18 @@ pub(crate) fn provider_checksum(entry: &EntryWithPath) -> bool {
 async fn attempt_download_file(
     raw_url: &str,
     local_path: PathBuf,
-    client: &Client,
-    checksum: &Option<HashObject>,
+    client: Arc<Client>,
+    checksum: Option<HashObject>,
 ) -> Result<()> {
     debug!("Download to local file path: {}", local_path.display());
 
-    if let Some(checksum_obj) = checksum {
+    if let Some(checksum_obj) = checksum.clone() {
         if checksum_obj.verify_file_checksum(&local_path).await? {
+            info!(
+                "Skip as local file existed: {} with checksum: {}",
+                local_path.display(),
+                checksum_obj.as_hash_str()
+            );
             return Ok(());
         }
     }
@@ -436,7 +441,7 @@ async fn attempt_download_file(
     }
 
     // Verify the file checksum (if provided)
-    if let Some(checksum_obj) = checksum {
+    if let Some(checksum_obj) = checksum.clone() {
         let verified = checksum_obj.verify_file_checksum(&local_path).await?;
         if !verified {
             return Err(anyhow!(
