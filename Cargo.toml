@@ -19,8 +19,10 @@ log = "0"
 percent-encoding = "2"
 clap = { version = "4", features = ["derive"] }
 once_cell = "1"
+digest = "0"
 sha1 = "0"
 md-5 = "0"
+indicatif = "0"
 
 [profile.release]
 codegen-units = 1

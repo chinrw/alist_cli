@@ -1,17 +1,25 @@
 use std::{
     collections::{HashSet, VecDeque},
+    fmt::Write,
+    ops::Add,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use anyhow::{Ok, Result, anyhow};
+use digest::{Digest, OutputSizeUser, generic_array::ArrayLength};
+use indicatif::{MultiProgress, ProgressBar, ProgressFinish, ProgressState, ProgressStyle};
 use log::{debug, info, trace};
 use md5::Md5;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha1::{Digest, Sha1};
-use tokio::{fs, io::AsyncWriteExt, sync::Mutex};
+use sha1::Sha1;
+use tokio::{
+    fs::{self, File},
+    io::{AsyncReadExt, AsyncWriteExt, BufReader},
+    sync::Mutex,
+};
 use url::Url;
 
 use crate::ALIST_URL; // Use the async-aware Mutex from tokio
@@ -41,27 +49,53 @@ impl HashObject {
         }
     }
 
-    pub(crate) async fn compute_file_checksum(&self, local_path: &PathBuf) -> Result<String> {
-        let data = fs::read(&local_path).await?;
-        let mut hasher = Sha1::new();
-        hasher.update(&data);
+    async fn hash_process_bar<D: Digest + Default>(
+        mut reader: BufReader<File>,
+        file_size: u64,
+        local_path: &PathBuf,
+    ) -> Result<String>
+    where
+        <D as OutputSizeUser>::OutputSize: Add,
+        <<D as OutputSizeUser>::OutputSize as Add>::Output: ArrayLength<u8>,
+    {
+        let m = MultiProgress::new();
+        let pb = ProgressBar::new(file_size);
+        pb.set_style(ProgressStyle::with_template("{spinner:.green} {msg} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+        .unwrap()
+        .with_key("eta", |state: &ProgressState, w: &mut dyn Write| write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap())
+        .progress_chars("#>-"));
 
-        let computed = match self {
+        let mut buffer = [0u8; 8192];
+        let mut hasher = D::new();
+        let mut total_read = 0;
+
+        // Read the file in chunks
+        loop {
+            let n = reader.read(&mut buffer).await?;
+            if n == 0 {
+                break; // EOF reached
+            }
+            hasher.update(&buffer[..n]);
+            total_read += n as u64;
+            pb.set_position(total_read);
+        }
+        pb.finish_with_message(format!("Done hashing {}", local_path.display()));
+        Ok(format!("{:x}", hasher.finalize()))
+    }
+
+    pub(crate) async fn compute_file_checksum(&self, local_path: &PathBuf) -> Result<String> {
+        let file = File::open(local_path).await?;
+        let file_size = file.metadata().await?.len();
+        let reader = BufReader::new(file);
+
+        match self {
             HashObject::Sha1 { .. } => {
-                let mut hasher = Sha1::new();
-                hasher.update(&data);
-                // finalize() consumes the hasher, returning the 20-byte digest
-                let digest = hasher.finalize();
-                format!("{:x}", digest)
+                Self::hash_process_bar::<Sha1>(reader, file_size, local_path).await
             }
             HashObject::Md5 { .. } => {
-                let mut hasher = Md5::new();
-                hasher.update(&data);
-                let digest = hasher.finalize();
-                format!("{:x}", digest)
+                Self::hash_process_bar::<Md5>(reader, file_size, local_path).await
             }
-        };
-        Ok(computed)
+        }
     }
 
     /// Computes a fresh checksum from the file and compares it to
@@ -402,11 +436,11 @@ async fn attempt_download_file(
 
     if let Some(checksum_obj) = checksum.clone() {
         if checksum_obj.verify_file_checksum(&local_path).await? {
-            info!(
-                "Skip as local file existed: {} with checksum: {}",
-                local_path.display(),
-                checksum_obj.as_hash_str()
-            );
+            // info!(
+            //     "Skip as local file existed: {} with checksum: {}",
+            //     local_path.display(),
+            //     checksum_obj.as_hash_str()
+            // );
             return Ok(());
         }
     }

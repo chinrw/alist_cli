@@ -21,6 +21,9 @@ struct Cli {
     #[arg(short, long, global = true, default_value = "/")]
     url_path: String,
 
+    #[arg(short = 'j', long, global = true, default_value_t = 4)]
+    threads: usize,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -46,6 +49,8 @@ static ALIST_URL: Lazy<String> = Lazy::new(|| {
     // This closure runs the first time SERVER_ADDRESS is accessed.
     Cli::parse().server_address
 });
+
+static THREADS_NUM: Lazy<usize> = Lazy::new(|| Cli::parse().threads);
 
 #[tokio::main]
 async fn main() -> Result<()> {
