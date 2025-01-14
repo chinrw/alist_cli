@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::{Ok, Result, anyhow};
 use digest::{Digest, OutputSizeUser, generic_array::ArrayLength};
-use indicatif::{ProgressBar, ProgressFinish, ProgressState, ProgressStyle};
+use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use log::{debug, info, trace};
 use md5::Md5;
 use reqwest::Client;
