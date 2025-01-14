@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::{Ok, Result, anyhow};
 use digest::{Digest, OutputSizeUser, generic_array::ArrayLength};
-use indicatif::{MultiProgress, ProgressBar, ProgressFinish, ProgressState, ProgressStyle};
+use indicatif::{ProgressBar, ProgressFinish, ProgressState, ProgressStyle};
 use log::{debug, info, trace};
 use md5::Md5;
 use reqwest::Client;
@@ -58,7 +58,6 @@ impl HashObject {
         <D as OutputSizeUser>::OutputSize: Add,
         <<D as OutputSizeUser>::OutputSize as Add>::Output: ArrayLength<u8>,
     {
-        let m = MultiProgress::new();
         let pb = ProgressBar::new(file_size);
         pb.set_style(ProgressStyle::with_template("{spinner:.green} {msg} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
         .unwrap()
