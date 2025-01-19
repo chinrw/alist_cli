@@ -14,6 +14,9 @@
       "cargo"
       "rust-src"
       "rustc"
+      "clippy"
+      "rust-analyzer"
+      "rustfmt"
     ];
     enable = true;
   };
