@@ -52,7 +52,7 @@ impl HashObject {
     async fn hash_process_bar<D: Digest + Default>(
         mut reader: BufReader<File>,
         file_size: u64,
-        local_path: &PathBuf,
+        local_path: &Path,
     ) -> Result<String>
     where
         <D as OutputSizeUser>::OutputSize: Add,
@@ -358,16 +358,17 @@ pub fn _encrypt_md5(md5str: &str) -> String {
     );
 
     // 2) Build `encryptstr`: for each char, parse as hex digit, XOR with (15 & index), format as hex
-    let mut encryptstr: String = rearranged
-        .chars()
-        .enumerate()
-        .map(|(i, ch)| {
-            let val = ch
-                .to_digit(16)
-                .expect("Character in rearranged MD5 string wasn't valid hex.");
-            format!("{:x}", val ^ (15 & i as u32))
-        })
-        .collect();
+    let mut encryptstr: String =
+        rearranged
+            .chars()
+            .enumerate()
+            .fold(String::new(), |mut output, (i, ch)| {
+                let val = ch
+                    .to_digit(16)
+                    .expect("Character in rearranged MD5 string wasn't valid hex.");
+                let _ = write!(output, "{:x}", val ^ (15 & i as u32));
+                output
+            });
 
     // 3) Modify the 10th character (index 9): encryptstr[9] => 'g' + hexDigit
     let val_9 = encryptstr
