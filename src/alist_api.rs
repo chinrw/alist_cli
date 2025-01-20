@@ -82,7 +82,7 @@ impl HashObject {
         Ok(format!("{:x}", hasher.finalize()))
     }
 
-    pub(crate) async fn compute_file_checksum(&self, local_path: &PathBuf) -> Result<String> {
+    pub(crate) async fn compute_file_checksum(&self, local_path: &Path) -> Result<String> {
         let file = File::open(local_path).await?;
         let file_size = file.metadata().await?.len();
         let reader = BufReader::new(file);
@@ -99,7 +99,7 @@ impl HashObject {
 
     /// Computes a fresh checksum from the file and compares it to
     /// the stored hash. Returns `true` if they match, `false` otherwise.
-    pub async fn verify_file_checksum(&self, local_path: &PathBuf) -> Result<bool> {
+    pub async fn verify_file_checksum(&self, local_path: &Path) -> Result<bool> {
         let mut res = false;
         // Check if the local file exist
         if Path::new(&local_path).exists() {
@@ -339,8 +339,13 @@ pub(crate) async fn copy_metadata(
         local_path.push(relative_p2);
 
         let raw_url = get_raw_url(&client, file.1).await?;
-        download_file_with_retries(raw_url, local_path, &client, file.1.entry.hash_info.clone())
-            .await?;
+        download_file_with_retries(
+            &raw_url,
+            &local_path,
+            &client,
+            file.1.entry.hash_info.clone(),
+        )
+        .await?;
     }
     Ok(())
 }
@@ -385,20 +390,13 @@ pub fn _encrypt_md5(md5str: &str) -> String {
 }
 
 pub async fn download_file_with_retries(
-    raw_url: String,
-    local_path: PathBuf,
+    raw_url: &str,
+    local_path: &Path,
     client: &Arc<Client>,
     checksum: Option<HashObject>,
 ) -> Result<()> {
     for attempt in 1..=3 {
-        match attempt_download_file(
-            &raw_url,
-            local_path.clone(),
-            client.clone(),
-            checksum.clone(),
-        )
-        .await
-        {
+        match attempt_download_file(raw_url, local_path, client.clone(), checksum.clone()).await {
             std::result::Result::Ok(_) => return Ok(()),
             Err(e) if attempt < 3 => info!(
                 "Download attempt #{} for '{}' failed: {}. Retrying...",
@@ -428,14 +426,14 @@ pub(crate) fn provider_checksum(entry: &EntryWithPath) -> bool {
 
 async fn attempt_download_file(
     raw_url: &str,
-    local_path: PathBuf,
+    local_path: &Path,
     client: Arc<Client>,
     checksum: Option<HashObject>,
 ) -> Result<()> {
     debug!("Download to local file path: {}", local_path.display());
 
     if let Some(checksum_obj) = checksum.clone() {
-        if checksum_obj.verify_file_checksum(&local_path).await? {
+        if checksum_obj.verify_file_checksum(local_path).await? {
             // info!(
             //     "Skip as local file existed: {} with checksum: {}",
             //     local_path.display(),
@@ -484,7 +482,7 @@ async fn attempt_download_file(
 
     // Verify the file checksum (if provided)
     if let Some(checksum_obj) = checksum.clone() {
-        let verified = checksum_obj.verify_file_checksum(&local_path).await?;
+        let verified = checksum_obj.verify_file_checksum(local_path).await?;
         if !verified {
             return Err(anyhow!(
                 "Checksum mismatch. Downloaded file does not match the expected hash."
