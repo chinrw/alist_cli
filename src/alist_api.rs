@@ -392,11 +392,11 @@ pub fn _encrypt_md5(md5str: &str) -> String {
 pub async fn download_file_with_retries(
     raw_url: &str,
     local_path: &Path,
-    client: &Arc<Client>,
+    client: &Client,
     checksum: Option<HashObject>,
 ) -> Result<()> {
     for attempt in 1..=3 {
-        match attempt_download_file(raw_url, local_path, client.clone(), checksum.clone()).await {
+        match attempt_download_file(raw_url, local_path, client, checksum.clone()).await {
             std::result::Result::Ok(_) => return Ok(()),
             Err(e) if attempt < 3 => info!(
                 "Download attempt #{} for '{}' failed: {}. Retrying...",
@@ -427,7 +427,7 @@ pub(crate) fn provider_checksum(entry: &EntryWithPath) -> bool {
 async fn attempt_download_file(
     raw_url: &str,
     local_path: &Path,
-    client: Arc<Client>,
+    client: &Client,
     checksum: Option<HashObject>,
 ) -> Result<()> {
     debug!("Download to local file path: {}", local_path.display());
