@@ -243,7 +243,7 @@ async fn fetch_folder_contents(
                 }
                 for file in &folders_info.content.unwrap() {
                     let full_path = format!("{}/{}", current_path, file.name);
-                    debug!("entry path: {}", full_path);
+                    info!("entry path: {}", full_path);
 
                     // Add this entry and its full path to the list
                     entries_with_paths.push(EntryWithPath {

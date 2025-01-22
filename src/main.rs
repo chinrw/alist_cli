@@ -74,6 +74,10 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Cli::parse();
+
+    // Set up a new multi-progress bar.
+    let multibar = std::sync::Arc::new(indicatif::MultiProgress::new());
+
     match args.command {
         Commands::AutoSym { local_path } => {
             let res = alist_api::get_path_structure(args.url_path).await?;
