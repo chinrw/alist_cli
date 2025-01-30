@@ -9,7 +9,7 @@ use std::{
 use anyhow::{Ok, Result, anyhow};
 use digest::{Digest, OutputSizeUser, generic_array::ArrayLength};
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
-use log::{debug, info, trace};
+use log::{debug, info, trace, warn};
 use md5::Md5;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -339,13 +339,17 @@ pub(crate) async fn copy_metadata(
         local_path.push(relative_p2);
 
         let raw_url = get_raw_url(&client, file.1).await?;
-        download_file_with_retries(
+
+        if let Err(e) = download_file_with_retries(
             &raw_url,
             &local_path,
             &client,
             file.1.entry.hash_info.clone(),
         )
-        .await?;
+        .await
+        {
+            warn!("Failed to download '{}': {}", raw_url, e);
+        };
     }
     Ok(())
 }

@@ -76,7 +76,7 @@ async fn main() -> Result<()> {
     let args = Cli::parse();
 
     // Set up a new multi-progress bar.
-    let multibar = std::sync::Arc::new(indicatif::MultiProgress::new());
+    let _multibar = std::sync::Arc::new(indicatif::MultiProgress::new());
 
     match args.command {
         Commands::AutoSym { local_path } => {
