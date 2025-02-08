@@ -37,6 +37,8 @@
     hello
     git --version
     rustc --version
+    cargo build -r
+    export PATH="$PWD/target/release:$PATH"
   '';
 
   # https://devenv.sh/tasks/
