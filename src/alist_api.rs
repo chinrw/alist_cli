@@ -28,7 +28,7 @@ const META_SUFF: [&str; 9] = [
     "nfo", "jpg", "png", "svg", "ass", "srt", "sup", "vtt", "txt",
 ];
 
-const FILE_STRM: [&str; 14] = [
+pub const FILE_STRM: [&str; 14] = [
     "mkv", "iso", "ts", "mp4", "avi", "rmvb", "wmv", "m2ts", "mpg", "flv", "rm", "mov", "wav",
     "mp3",
 ];
