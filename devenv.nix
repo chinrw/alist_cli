@@ -39,6 +39,9 @@
     rustc --version
     cargo build -r
     export PATH="$PWD/target/release:$PATH"
+    unset https_proxy
+    unset http_proxy
+    unset all_proxy
   '';
 
   # https://devenv.sh/tasks/
