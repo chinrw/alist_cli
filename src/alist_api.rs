@@ -210,7 +210,7 @@ async fn fetch_folder_contents(
     path: String,
     visited_paths: Arc<Mutex<HashSet<String>>>,
 ) -> Result<Vec<EntryWithPath>> {
-    let client = Client::new();
+    let client = Client::builder().no_proxy().build()?;
     let mut entries_with_paths = Vec::new();
     let mut directories_to_process = VecDeque::new();
     directories_to_process.push_back(path.clone());
@@ -331,7 +331,7 @@ pub(crate) async fn copy_metadata(
         .iter()
         .filter(|(ext, _)| META_SUFF.contains(&ext.as_str()));
 
-    let client = Arc::new(Client::new());
+    let client = Arc::new(Client::builder().no_proxy().build()?);
     for file in files_copy {
         let mut local_path = PathBuf::from(output_path);
         // remove the leading "/"
@@ -502,7 +502,7 @@ pub(crate) async fn create_strm_file(
     files_with_ext: &Vec<(String, &EntryWithPath)>,
     output_path: &str,
 ) -> Result<()> {
-    let client = Client::new();
+    let client = Client::builder().no_proxy().build()?;
     let files_strm = files_with_ext
         .iter()
         .filter(|(ext, _)| FILE_STRM.contains(&ext.as_str()))
