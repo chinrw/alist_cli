@@ -8,10 +8,10 @@ pub use std::{
 
 use anyhow::{Ok, Result};
 use clap::Parser;
-use log::{info, trace, warn};
+use log::{info, trace};
 use once_cell::sync::Lazy;
 use tokio::fs;
-use walkdir::{DirEntry, WalkDir};
+use walkdir::WalkDir;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
