@@ -99,6 +99,18 @@ async fn remove_noexist_files(
         }
     }
 
+    for entry in WalkDir::new(&folder_path)
+        .contents_first(true)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().is_dir())
+    {
+        let file_path = entry.path();
+        if tokio::fs::remove_dir(file_path).await.is_ok() {
+            info!("Removed empty directory: {}", file_path.display());
+        }
+    }
+
     Ok(())
 }
 
