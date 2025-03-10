@@ -10,7 +10,7 @@ use anyhow::{Ok, Result, anyhow};
 use digest::{Digest, OutputSizeUser, generic_array::ArrayLength};
 use futures::stream::{self, StreamExt};
 use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
-use log::{debug, info, trace, warn};
+use log::{Level, debug, info, log_enabled, trace, warn};
 use md5::Md5;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -62,11 +62,23 @@ impl HashObject {
         <D as OutputSizeUser>::OutputSize: Add,
         <<D as OutputSizeUser>::OutputSize as Add>::Output: ArrayLength<u8>,
     {
-        let pb = m_pb.insert_from_back(1, ProgressBar::new(file_size));
-        pb.set_style(ProgressStyle::with_template("{spinner:.green} {msg} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
-        .unwrap()
-        .with_key("eta", |state: &ProgressState, w: &mut dyn Write| write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap())
-        .progress_chars("#>-"));
+        // Check if we're in verbose log mode if true print hash progress bar
+        let is_verbose_logging = !log_enabled!(Level::Debug);
+
+        let pb = if is_verbose_logging {
+            let pb = m_pb.insert_from_back(1, ProgressBar::new(file_size));
+            pb.set_style(ProgressStyle::with_template("{spinner:.green} {msg} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+            .unwrap()
+            .with_key("eta", |state: &ProgressState, w: &mut dyn Write| write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap())
+            .progress_chars("#>-"));
+            pb
+        } else {
+            // Create a hidden/dummy progress bar when in debug mode
+            let pb = m_pb.insert_from_back(1, ProgressBar::new(file_size));
+            pb.set_style(ProgressStyle::default_bar());
+            pb.set_draw_target(indicatif::ProgressDrawTarget::hidden());
+            pb
+        };
 
         let mut total_read = 0;
 
