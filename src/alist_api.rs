@@ -246,8 +246,8 @@ async fn fetch_folder_contents(
     let spinner_style =
         ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{len}] {wide_msg}")
             .unwrap();
-    let folder_pb = m_pb.add(ProgressBar::new_spinner());
-    folder_pb.set_style(spinner_style.clone());
+    let pb = m_pb.add(ProgressBar::new_spinner());
+    pb.set_style(spinner_style.clone());
 
     // Process the directories iteratively using a queue
     while let Some(current_path) = directories_to_process.pop_front() {
@@ -271,7 +271,6 @@ async fn fetch_folder_contents(
             let api_response: ApiResponse = response.json().await?;
             trace!("list api_response: {:?}", api_response);
 
-            folder_pb.set_message(format!("Scanning: {}", current_path));
             if let Some(ApiData::FoldersInfo(folders_info)) = api_response.data {
                 // Add the current path to the list of entries
                 if folders_info.content.is_none() {
@@ -281,6 +280,7 @@ async fn fetch_folder_contents(
                     let full_path = format!("{}/{}", current_path, file.name);
                     debug!("entry path: {}", full_path);
 
+                    pb.set_message(format!("Scanning: {}", full_path));
                     // Add this entry and its full path to the list
                     entries_with_paths.push(EntryWithPath {
                         entry: file.clone(),
@@ -295,21 +295,21 @@ async fn fetch_folder_contents(
                             directories_to_process.push_back(full_path);
                         }
                     }
+                    pb.inc(1);
                 }
             } else {
-                folder_pb.finish_with_message("Failed to fetch directory contents");
+                pb.finish_with_message("Failed to fetch directory contents");
                 return Err(anyhow!("fetch_folder_contents Invalid data"));
             }
         } else {
-            folder_pb.finish_with_message("API error");
+            pb.finish_with_message("API error");
             return Err(anyhow!(
                 "fetch_folder_contents Request failed {:?}",
                 response
             ));
         }
-        folder_pb.inc(1);
     }
-
+    info!("Processed {} files", pb.position());
     Ok(entries_with_paths)
 }
 
@@ -352,6 +352,8 @@ pub(crate) async fn copy_metadata(
     output_path: &str,
     m_pb: MultiProgress,
 ) -> Result<()> {
+    info!("Start to copy metadata");
+
     let files_copy: Vec<&(String, &EntryWithPath)> = files_with_ext
         .iter()
         .filter(|(ext, _)| META_SUFF.contains(&ext.as_str()))
@@ -415,7 +417,7 @@ pub(crate) async fn copy_metadata(
         })
         .await;
 
-    pb.finish_with_message("metadata file created");
+    info!("Metadata files created");
 
     Ok(())
 }
@@ -619,7 +621,7 @@ pub(crate) async fn create_strm_file(
         pb.inc(1);
     }
 
-    pb.finish_with_message("strm file created");
+    info!("strm file created");
 
     Ok(())
 }

@@ -162,7 +162,6 @@ async fn main() -> Result<()> {
                 })
                 .collect();
 
-            info!("Start to copy metadata");
             alist_api::copy_metadata(&files_with_ext, &local_path, m_pb.clone()).await?;
             alist_api::create_strm_file(&files_with_ext, &local_path, m_pb).await?;
             let files_set: HashSet<String> = res
