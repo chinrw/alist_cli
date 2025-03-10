@@ -1,5 +1,6 @@
 mod alist_api;
 mod download;
+mod log_bridge;
 
 pub use std::{
     collections::HashSet,
@@ -8,6 +9,7 @@ pub use std::{
 
 use anyhow::{Ok, Result};
 use clap::Parser;
+use indicatif::MultiProgress;
 use log::{info, trace};
 use once_cell::sync::Lazy;
 use tokio::fs;
@@ -116,7 +118,7 @@ async fn remove_noexist_files(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    env_logger::Builder::new()
+    let logger = env_logger::Builder::new()
         .parse_filters(&std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()))
         .write_style(env_logger::WriteStyle::Always)
         // .format(|buf, record| {
@@ -133,12 +135,16 @@ async fn main() -> Result<()> {
         //         record.args()                         // The log message
         //     )
         // })
-        .init();
+        .build();
+
+    let level = logger.filter();
+    let m_pb = MultiProgress::new();
+    log_bridge::LogWrapper::new(m_pb.clone(), logger)
+        .try_init()
+        .unwrap();
+    log::set_max_level(level);
 
     let args = Cli::parse();
-
-    // Set up a new multi-progress bar.
-    let _multibar = std::sync::Arc::new(indicatif::MultiProgress::new());
 
     match args.command {
         Commands::AutoSym { local_path, delete } => {
@@ -146,8 +152,8 @@ async fn main() -> Result<()> {
             let files_with_ext = alist_api::get_file_ext(&res).await;
 
             info!("Start to copy metadata");
-            alist_api::copy_metadata(&files_with_ext, &local_path).await?;
-            alist_api::create_strm_file(&files_with_ext, &local_path).await?;
+            alist_api::copy_metadata(&files_with_ext, &local_path, m_pb.clone()).await?;
+            alist_api::create_strm_file(&files_with_ext, &local_path, m_pb).await?;
             let files_set: HashSet<String> = res
                 .into_iter()
                 .map(|s| s.path_str)

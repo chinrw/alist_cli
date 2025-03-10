@@ -1,6 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Ok, Result};
+use indicatif::MultiProgress;
 use reqwest::Client;
 use tokio::{sync::Semaphore, task::JoinSet};
 
@@ -34,7 +35,14 @@ pub(super) async fn download_folders(url_path: String, local_path: &str) -> Resu
                 None
             };
 
-            download_file_with_retries(&raw_url, &local_path_buf, &client_cloned, hash_info).await
+            download_file_with_retries(
+                &raw_url,
+                &local_path_buf,
+                &client_cloned,
+                hash_info,
+                MultiProgress::new(),
+            )
+            .await
         });
     }
 

@@ -8,7 +8,8 @@ use std::{
 
 use anyhow::{Ok, Result, anyhow};
 use digest::{Digest, OutputSizeUser, generic_array::ArrayLength};
-use indicatif::{ProgressBar, ProgressState, ProgressStyle};
+use futures::stream::{self, StreamExt};
+use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use log::{debug, info, trace, warn};
 use md5::Md5;
 use reqwest::Client;
@@ -33,6 +34,8 @@ pub const FILE_STRM: [&str; 14] = [
     "mp3",
 ];
 
+const ALIST_CONCURRENT_LIMIT: usize = 10;
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(untagged)]
 pub(crate) enum HashObject {
@@ -53,21 +56,22 @@ impl HashObject {
         mut reader: BufReader<File>,
         file_size: u64,
         local_path: &Path,
+        m_pb: MultiProgress,
     ) -> Result<String>
     where
         <D as OutputSizeUser>::OutputSize: Add,
         <<D as OutputSizeUser>::OutputSize as Add>::Output: ArrayLength<u8>,
     {
-        let pb = ProgressBar::new(file_size);
+        let pb = m_pb.insert_from_back(1, ProgressBar::new(file_size));
         pb.set_style(ProgressStyle::with_template("{spinner:.green} {msg} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
         .unwrap()
         .with_key("eta", |state: &ProgressState, w: &mut dyn Write| write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap())
         .progress_chars("#>-"));
 
-        let mut buffer = [0u8; 8192];
-        let mut hasher = D::new();
         let mut total_read = 0;
 
+        let mut buffer = [0u8; 8192];
+        let mut hasher = D::new();
         // Read the file in chunks
         loop {
             let n = reader.read(&mut buffer).await?;
@@ -82,28 +86,36 @@ impl HashObject {
         Ok(format!("{:x}", hasher.finalize()))
     }
 
-    pub(crate) async fn compute_file_checksum(&self, local_path: &Path) -> Result<String> {
+    pub(crate) async fn compute_file_checksum(
+        &self,
+        local_path: &Path,
+        m_pb: MultiProgress,
+    ) -> Result<String> {
         let file = File::open(local_path).await?;
         let file_size = file.metadata().await?.len();
         let reader = BufReader::new(file);
 
         match self {
             HashObject::Sha1 { .. } => {
-                Self::hash_process_bar::<Sha1>(reader, file_size, local_path).await
+                Self::hash_process_bar::<Sha1>(reader, file_size, local_path, m_pb).await
             }
             HashObject::Md5 { .. } => {
-                Self::hash_process_bar::<Md5>(reader, file_size, local_path).await
+                Self::hash_process_bar::<Md5>(reader, file_size, local_path, m_pb).await
             }
         }
     }
 
     /// Computes a fresh checksum from the file and compares it to
     /// the stored hash. Returns `true` if they match, `false` otherwise.
-    pub async fn verify_file_checksum(&self, local_path: &Path) -> Result<bool> {
+    pub async fn verify_file_checksum(
+        &self,
+        local_path: &Path,
+        m_pb: MultiProgress,
+    ) -> Result<bool> {
         let mut res = false;
         // Check if the local file exist
         if Path::new(&local_path).exists() {
-            let computed = self.compute_file_checksum(local_path).await?;
+            let computed = self.compute_file_checksum(local_path, m_pb).await?;
             debug!(
                 "local checksum: {} remote file checksum: {}",
                 computed,
@@ -174,7 +186,7 @@ pub(crate) struct FoldersInfo {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(untagged)] // Tells serde to figure out the correct struct based on the content of the response
 pub(crate) enum ApiData {
-    FileInfo(FileInfo),
+    FileInfo(Box<FileInfo>),
     FoldersInfo(FoldersInfo),
 }
 
@@ -326,31 +338,73 @@ pub(crate) async fn get_raw_url(client: &Client, entry: &EntryWithPath) -> Resul
 pub(crate) async fn copy_metadata(
     files_with_ext: &Vec<(String, &EntryWithPath)>,
     output_path: &str,
+    m_pb: MultiProgress,
 ) -> Result<()> {
-    let files_copy = files_with_ext
+    let files_copy: Vec<&(String, &EntryWithPath)> = files_with_ext
         .iter()
-        .filter(|(ext, _)| META_SUFF.contains(&ext.as_str()));
+        .filter(|(ext, _)| META_SUFF.contains(&ext.as_str()))
+        .collect();
+
+    let sty = ProgressStyle::with_template(
+        "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({eta})",
+    )
+    .unwrap()
+    .with_key("eta", |state: &ProgressState, w: &mut dyn Write| {
+        write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap()
+    })
+    .progress_chars("#>-");
+
+    let pb = m_pb
+        .add(ProgressBar::new(files_copy.len() as u64))
+        .with_style(sty.clone());
 
     let client = Arc::new(Client::builder().no_proxy().build()?);
-    for file in files_copy {
-        let mut local_path = PathBuf::from(output_path);
-        // remove the leading "/"
-        let relative_p2 = file.1.path_str.trim_start_matches('/');
-        local_path.push(relative_p2);
+    // Create a stream of futures.
+    let tasks = stream::iter(files_copy.into_iter().map(|file| {
+        // Clone necessary values for the async block.
+        let client = client.clone();
+        let pb = pb.clone();
+        let m_clone = m_pb.clone();
+        let output_path = output_path.to_string();
+        async move {
+            // Construct the full local path.
+            let mut local_path = PathBuf::from(&output_path);
+            let relative_p2 = file.1.path_str.trim_start_matches('/');
+            local_path.push(relative_p2);
 
-        let raw_url = get_raw_url(&client, file.1).await?;
+            // Obtain the raw URL asynchronously.
+            let raw_url = get_raw_url(&client, file.1).await?;
+            // Attempt to download the file with retries.
+            if let Err(e) = download_file_with_retries(
+                &raw_url,
+                &local_path,
+                &client,
+                file.1.entry.hash_info.clone(),
+                m_clone.clone(),
+            )
+            .await
+            {
+                warn!("Failed to download '{}': {}", raw_url, e);
+            };
 
-        if let Err(e) = download_file_with_retries(
-            &raw_url,
-            &local_path,
-            &client,
-            file.1.entry.hash_info.clone(),
-        )
-        .await
-        {
-            warn!("Failed to download '{}': {}", raw_url, e);
-        };
-    }
+            pb.inc(1);
+            Ok(())
+        }
+    }))
+    .buffer_unordered(ALIST_CONCURRENT_LIMIT);
+
+    // Wait for all tasks to complete.
+    tasks
+        .for_each(|res| async {
+            if let Err(e) = res {
+                // Optionally handle individual errors here.
+                warn!("Task failed with error: {}", e);
+            }
+        })
+        .await;
+
+    pb.finish_with_message("metadata file created");
+
     Ok(())
 }
 
@@ -398,9 +452,12 @@ pub async fn download_file_with_retries(
     local_path: &Path,
     client: &Client,
     checksum: Option<HashObject>,
+    m_pb: MultiProgress,
 ) -> Result<()> {
     for attempt in 1..=3 {
-        match attempt_download_file(raw_url, local_path, client, checksum.clone()).await {
+        match attempt_download_file(raw_url, local_path, client, checksum.clone(), m_pb.clone())
+            .await
+        {
             std::result::Result::Ok(_) => return Ok(()),
             Err(e) if attempt < 3 => info!(
                 "Download attempt #{} for '{}' failed: {}. Retrying...",
@@ -433,16 +490,15 @@ async fn attempt_download_file(
     local_path: &Path,
     client: &Client,
     checksum: Option<HashObject>,
+    m_pb: MultiProgress,
 ) -> Result<()> {
     debug!("Download to local file path: {}", local_path.display());
 
     if let Some(checksum_obj) = checksum.clone() {
-        if checksum_obj.verify_file_checksum(local_path).await? {
-            // info!(
-            //     "Skip as local file existed: {} with checksum: {}",
-            //     local_path.display(),
-            //     checksum_obj.as_hash_str()
-            // );
+        if checksum_obj
+            .verify_file_checksum(local_path, m_pb.clone())
+            .await?
+        {
             return Ok(());
         }
     }
@@ -486,13 +542,15 @@ async fn attempt_download_file(
 
     // Verify the file checksum (if provided)
     if let Some(checksum_obj) = checksum.clone() {
-        let verified = checksum_obj.verify_file_checksum(local_path).await?;
+        let verified = checksum_obj
+            .verify_file_checksum(local_path, m_pb.clone())
+            .await?;
         if !verified {
             return Err(anyhow!(
                 "Checksum mismatch. Downloaded file does not match the expected hash."
             ));
         }
-        info!("Downloaded file verified successfully against the provided hash.");
+        debug!("Downloaded file verified successfully against the provided hash.");
     }
 
     Ok(())
@@ -501,38 +559,55 @@ async fn attempt_download_file(
 pub(crate) async fn create_strm_file(
     files_with_ext: &Vec<(String, &EntryWithPath)>,
     output_path: &str,
+    m_pb: MultiProgress,
 ) -> Result<()> {
     let client = Client::builder().no_proxy().build()?;
     let files_strm = files_with_ext
         .iter()
-        .filter(|(ext, _)| FILE_STRM.contains(&ext.as_str()))
-        .map(|f| {
-            let client_ref = &client;
-            async move {
-                let raw_url = get_raw_url(client_ref, f.1).await?;
-                let mut local_path = PathBuf::from(output_path);
-                let relative_p2 = f.1.path_str.trim_start_matches('/');
-                local_path.push(relative_p2);
-                local_path.set_extension("strm");
+        .filter(|(ext, _)| FILE_STRM.contains(&ext.as_str()));
 
-                let parsed_url = Url::parse(&raw_url)
-                    .map_err(|e| anyhow!("Failed to parse URL '{}': {}", raw_url, e))?;
-                Ok((parsed_url, local_path))
-            }
-        });
+    let pb = m_pb.add(ProgressBar::new(files_strm.clone().count() as u64));
+    pb.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({eta})",
+        )
+        .unwrap()
+        .with_key("eta", |state: &ProgressState, w: &mut dyn Write| {
+            write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap()
+        })
+        .progress_chars("#>-"),
+    );
 
-    for file in files_strm {
-        let (raw_url, local_path) = file.await?;
+    info!("Start to create strm files");
+    let mut results = stream::iter(files_strm.map(|f| {
+        let client_ref = &client;
+        async move {
+            let raw_url = get_raw_url(client_ref, f.1).await?;
+            let mut local_path = PathBuf::from(output_path);
+            let relative_p2 = f.1.path_str.trim_start_matches('/');
+            local_path.push(relative_p2);
+            local_path.set_extension("strm");
 
-        // Ensure the parent directory exists
+            let parsed_url = Url::parse(&raw_url)
+                .map_err(|e| anyhow!("Failed to parse URL '{}': {}", raw_url, e))?;
+            Ok((parsed_url, local_path))
+        }
+    }))
+    .buffer_unordered(ALIST_CONCURRENT_LIMIT);
+
+    while let Some(result) = results.next().await {
+        let (raw_url, local_path) = result?;
+
         if let Some(parent_dir) = local_path.parent() {
             if !parent_dir.exists() {
                 fs::create_dir_all(parent_dir).await?;
             }
         }
-
-        // Create or truncate the file
         fs::write(&local_path, raw_url.as_str()).await?;
+        pb.inc(1);
     }
+
+    pb.finish_with_message("strm file created");
+
     Ok(())
 }
