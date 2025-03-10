@@ -148,8 +148,19 @@ async fn main() -> Result<()> {
 
     match args.command {
         Commands::AutoSym { local_path, delete } => {
-            let res = alist_api::get_path_structure(args.url_path.clone()).await?;
-            let files_with_ext = alist_api::get_file_ext(&res).await;
+            let res = alist_api::get_path_structure(args.url_path.clone(), m_pb.clone()).await?;
+
+            // get file extensions for further baking
+            let files_with_ext = res
+                .iter()
+                .filter(|x| !x.entry.is_dir)
+                .filter_map(|x| {
+                    Path::new(&x.path_str)
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .map(|ext_str| (ext_str.to_owned(), x))
+                })
+                .collect();
 
             info!("Start to copy metadata");
             alist_api::copy_metadata(&files_with_ext, &local_path, m_pb.clone()).await?;
@@ -173,7 +184,7 @@ async fn main() -> Result<()> {
             remove_noexist_files(local_path, args.url_path, &files_set, delete).await?;
         }
         Commands::Download { local_path } => {
-            download::download_folders(args.url_path, &local_path).await?;
+            download::download_folders(args.url_path, &local_path, m_pb).await?;
         }
     }
 

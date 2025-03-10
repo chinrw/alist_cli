@@ -63,7 +63,7 @@ impl HashObject {
         <<D as OutputSizeUser>::OutputSize as Add>::Output: ArrayLength<u8>,
     {
         // Check if we're in verbose log mode if true print hash progress bar
-        let is_verbose_logging = !log_enabled!(Level::Debug);
+        let is_verbose_logging = log_enabled!(Level::Debug);
 
         let pb = if is_verbose_logging {
             let pb = m_pb.insert_from_back(1, ProgressBar::new(file_size));
@@ -173,7 +173,7 @@ pub(crate) struct FileInfoRequest {
 pub(crate) struct EntryInfo {
     name: String,
     size: u64,
-    is_dir: bool,
+    pub(crate) is_dir: bool,
     modified: String,
     sign: String,
     thumb: String,
@@ -216,7 +216,10 @@ pub(crate) struct EntryWithPath {
     pub(crate) provider: String,
 }
 
-pub(crate) async fn get_path_structure(path: String) -> Result<Vec<EntryWithPath>> {
+pub(crate) async fn get_path_structure(
+    path: String,
+    m_pb: MultiProgress,
+) -> Result<Vec<EntryWithPath>> {
     let visited_paths = Arc::new(Mutex::new(HashSet::new()));
     {
         let mut visited_paths_lock = visited_paths.lock().await;
@@ -224,7 +227,7 @@ pub(crate) async fn get_path_structure(path: String) -> Result<Vec<EntryWithPath
     }
 
     // Fetch the folder contents iteratively and get all entries with paths
-    let entries_with_paths = fetch_folder_contents(path, visited_paths.clone()).await?;
+    let entries_with_paths = fetch_folder_contents(path, visited_paths.clone(), m_pb).await?;
 
     // Return the collected entries along with their paths
     Ok(entries_with_paths)
@@ -233,11 +236,18 @@ pub(crate) async fn get_path_structure(path: String) -> Result<Vec<EntryWithPath
 async fn fetch_folder_contents(
     path: String,
     visited_paths: Arc<Mutex<HashSet<String>>>,
+    m_pb: MultiProgress,
 ) -> Result<Vec<EntryWithPath>> {
     let client = Client::builder().no_proxy().build()?;
     let mut entries_with_paths = Vec::new();
     let mut directories_to_process = VecDeque::new();
     directories_to_process.push_back(path.clone());
+
+    let spinner_style =
+        ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{len}] {wide_msg}")
+            .unwrap();
+    let folder_pb = m_pb.add(ProgressBar::new_spinner());
+    folder_pb.set_style(spinner_style.clone());
 
     // Process the directories iteratively using a queue
     while let Some(current_path) = directories_to_process.pop_front() {
@@ -249,8 +259,8 @@ async fn fetch_folder_contents(
             per_page: 0,
             refresh: false,
         };
-
         trace!("Payload: {:?}", payload);
+
         let response = client
             .post(format!("{}/api/fs/list", *ALIST_URL))
             .json(&payload)
@@ -260,6 +270,8 @@ async fn fetch_folder_contents(
         if response.status().is_success() {
             let api_response: ApiResponse = response.json().await?;
             trace!("list api_response: {:?}", api_response);
+
+            folder_pb.set_message(format!("Scanning: {}", current_path));
             if let Some(ApiData::FoldersInfo(folders_info)) = api_response.data {
                 // Add the current path to the list of entries
                 if folders_info.content.is_none() {
@@ -267,7 +279,7 @@ async fn fetch_folder_contents(
                 }
                 for file in &folders_info.content.unwrap() {
                     let full_path = format!("{}/{}", current_path, file.name);
-                    info!("entry path: {}", full_path);
+                    debug!("entry path: {}", full_path);
 
                     // Add this entry and its full path to the list
                     entries_with_paths.push(EntryWithPath {
@@ -285,32 +297,20 @@ async fn fetch_folder_contents(
                     }
                 }
             } else {
+                folder_pb.finish_with_message("Failed to fetch directory contents");
                 return Err(anyhow!("fetch_folder_contents Invalid data"));
             }
         } else {
+            folder_pb.finish_with_message("API error");
             return Err(anyhow!(
                 "fetch_folder_contents Request failed {:?}",
                 response
             ));
         }
+        folder_pb.inc(1);
     }
 
     Ok(entries_with_paths)
-}
-
-pub(crate) async fn get_file_ext(
-    entries_with_paths: &[EntryWithPath],
-) -> Vec<(String, &EntryWithPath)> {
-    entries_with_paths
-        .iter()
-        .filter(|x| !x.entry.is_dir)
-        .filter_map(|x| {
-            Path::new(&x.path_str)
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .map(|ext_str| (ext_str.to_owned(), x))
-        })
-        .collect()
 }
 
 pub(crate) async fn get_raw_url(client: &Client, entry: &EntryWithPath) -> Result<String> {

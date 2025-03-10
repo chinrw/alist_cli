@@ -10,8 +10,12 @@ use crate::{
     alist_api::{download_file_with_retries, get_path_structure, get_raw_url, provider_checksum},
 };
 
-pub(super) async fn download_folders(url_path: String, local_path: &str) -> Result<()> {
-    let res = get_path_structure(url_path).await?;
+pub(super) async fn download_folders(
+    url_path: String,
+    local_path: &str,
+    m_pb: MultiProgress,
+) -> Result<()> {
+    let res = get_path_structure(url_path, m_pb.clone()).await?;
     let mut tasks = JoinSet::new();
     let client = Arc::new(Client::new());
     let semaphore = Arc::new(Semaphore::new(*THREADS_NUM)); // Limit concurrency to 4
@@ -25,6 +29,7 @@ pub(super) async fn download_folders(url_path: String, local_path: &str) -> Resu
         let relative_p2 = f.path_str.trim_start_matches('/');
         local_path_buf.push(relative_p2);
 
+        let m_clone = m_pb.clone();
         tasks.spawn(async move {
             // use semaphore to limit the concurrent downloader
             let _permit = semaphore_cloned.acquire().await.unwrap();
@@ -40,7 +45,7 @@ pub(super) async fn download_folders(url_path: String, local_path: &str) -> Resu
                 &local_path_buf,
                 &client_cloned,
                 hash_info,
-                MultiProgress::new(),
+                m_clone,
             )
             .await
         });
