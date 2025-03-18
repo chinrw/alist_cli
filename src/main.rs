@@ -7,7 +7,7 @@ pub use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Ok, Result};
+use anyhow::Result;
 use clap::Parser;
 use indicatif::MultiProgress;
 use log::{info, trace};
