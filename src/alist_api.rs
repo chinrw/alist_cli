@@ -4,13 +4,14 @@ use std::{
     ops::Add,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 use anyhow::{Ok, Result, anyhow};
 use digest::{Digest, OutputSizeUser, generic_array::ArrayLength};
 use futures::stream::{self, StreamExt};
 use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
-use log::{Level, debug, info, log_enabled, trace, warn};
+use log::{Level, debug, error, info, log_enabled, trace, warn};
 use md5::Md5;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -23,7 +24,7 @@ use tokio::{
 };
 use url::Url;
 
-use crate::ALIST_URL; // Use the async-aware Mutex from tokio
+use crate::{ALIST_URL, TOKEN}; // Use the async-aware Mutex from tokio
 
 const META_SUFF: [&str; 9] = [
     "nfo", "jpg", "png", "svg", "ass", "srt", "sup", "vtt", "txt",
@@ -35,6 +36,8 @@ pub const FILE_STRM: [&str; 14] = [
 ];
 
 const ALIST_CONCURRENT_LIMIT: usize = 10;
+const MAX_RETRIES: u32 = 3;
+const RETRY_DELAY_MS: u64 = 1000;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(untagged)]
@@ -233,6 +236,127 @@ pub(crate) async fn get_path_structure(
     Ok(entries_with_paths)
 }
 
+async fn get_api_response(client: &Client, payload: &FileInfoRequest) -> Result<ApiResponse> {
+    let response = client
+        .post(format!("{}/api/fs/list", *ALIST_URL))
+        .json(payload)
+        .header("Authorization", TOKEN.clone())
+        .header("Content-Type", "application/json")
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        return Err(anyhow!("HTTP error: {}", response.status()));
+    }
+
+    let api_response: ApiResponse = response
+        .json()
+        .await
+        .map_err(|e| anyhow!("Failed to parse API response: {}", e))?;
+
+    trace!("list api_response: {:?}", api_response);
+    Ok(api_response)
+}
+
+async fn process_folder_contents(
+    client: &Client,
+    current_path: &str,
+    payload: &FileInfoRequest,
+    entries_with_paths: &mut Vec<EntryWithPath>,
+    directories_to_process: &mut VecDeque<String>,
+    visited_paths: &Arc<Mutex<HashSet<String>>>,
+    pb: &ProgressBar,
+) -> Result<()> {
+    let mut retry_count = 0;
+
+    while retry_count <= MAX_RETRIES {
+        // Break early if this is a retry attempt
+        if retry_count > 0 {
+            info!(
+                "Retrying request for path {} ({}/{})",
+                current_path, retry_count, MAX_RETRIES
+            );
+            tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
+        }
+
+        // Attempt to get API response
+        let api_response = match get_api_response(client, payload).await {
+            std::result::Result::Ok(response) => response,
+            Err(err) => {
+                warn!("Request failed: {}", err);
+                retry_count += 1;
+                if retry_count > MAX_RETRIES {
+                    error!("Failed after {} retries: {}", MAX_RETRIES, current_path);
+                    return Err(err);
+                }
+                continue;
+            }
+        };
+
+        // Check for error codes in API response
+        if api_response.code != 200 {
+            warn!(
+                "API returned error code {}: {}",
+                api_response.code, api_response.message
+            );
+            retry_count += 1;
+            if retry_count > MAX_RETRIES {
+                error!("Failed after {} retries: {}", MAX_RETRIES, current_path);
+                return Err(anyhow!(
+                    "API error code {}: {}",
+                    api_response.code,
+                    api_response.message
+                ));
+            }
+            continue;
+        }
+
+        // Process the response data
+        match api_response.data {
+            Some(ApiData::FoldersInfo(folders_info)) => {
+                // Skip if no content
+                if folders_info.content.is_none() {
+                    return Ok(());
+                }
+
+                for file in &folders_info.content.unwrap() {
+                    let full_path = format!("{}/{}", current_path, file.name);
+                    debug!("entry path: {}", full_path);
+                    pb.set_message(format!("Scanning: {}", full_path));
+
+                    // Add this entry and its full path to the list
+                    entries_with_paths.push(EntryWithPath {
+                        entry: file.clone(),
+                        path_str: full_path.clone(),
+                        provider: folders_info.provider.clone(),
+                    });
+
+                    // If the item is a directory and hasn't been visited, add it to the queue
+                    if file.is_dir {
+                        let mut visited = visited_paths.lock().await;
+                        if visited.insert(full_path.clone()) {
+                            directories_to_process.push_back(full_path);
+                        }
+                    }
+                    pb.inc(1);
+                }
+
+                return Ok(());
+            }
+            _ => {
+                retry_count += 1;
+                if retry_count > MAX_RETRIES {
+                    error!("Failed after {} retries: {}", MAX_RETRIES, current_path);
+                    return Err(anyhow!("Invalid data format in API response"));
+                }
+                continue;
+            }
+        }
+    }
+
+    Err(anyhow!("Failed to process directory after maximum retries"))
+}
+
 async fn fetch_folder_contents(
     path: String,
     visited_paths: Arc<Mutex<HashSet<String>>>,
@@ -261,52 +385,23 @@ async fn fetch_folder_contents(
         };
         trace!("Payload: {:?}", payload);
 
-        let response = client
-            .post(format!("{}/api/fs/list", *ALIST_URL))
-            .json(&payload)
-            .header("Content-Type", "application/json")
-            .send()
-            .await?;
-        if response.status().is_success() {
-            let api_response: ApiResponse = response.json().await?;
-            trace!("list api_response: {:?}", api_response);
-
-            if let Some(ApiData::FoldersInfo(folders_info)) = api_response.data {
-                // Add the current path to the list of entries
-                if folders_info.content.is_none() {
-                    continue;
-                }
-                for file in &folders_info.content.unwrap() {
-                    let full_path = format!("{}/{}", current_path, file.name);
-                    debug!("entry path: {}", full_path);
-
-                    pb.set_message(format!("Scanning: {}", full_path));
-                    // Add this entry and its full path to the list
-                    entries_with_paths.push(EntryWithPath {
-                        entry: file.clone(),
-                        path_str: full_path.clone(),
-                        provider: folders_info.provider.clone(),
-                    });
-
-                    // If the item is a directory and hasn't been visited, add it to the queue
-                    if file.is_dir {
-                        let mut visited = visited_paths.lock().await;
-                        if visited.insert(full_path.clone()) {
-                            directories_to_process.push_back(full_path);
-                        }
-                    }
-                    pb.inc(1);
-                }
-            } else {
-                pb.finish_with_message("Failed to fetch directory contents");
-                return Err(anyhow!("fetch_folder_contents Invalid data"));
-            }
-        } else {
-            pb.finish_with_message("API error");
-            return Err(anyhow!(
-                "fetch_folder_contents Request failed {:?}",
-                response
-            ));
+        if let Err(err) = process_folder_contents(
+            &client,
+            &current_path,
+            &payload,
+            &mut entries_with_paths,
+            &mut directories_to_process,
+            &visited_paths,
+            &pb,
+        )
+        .await
+        {
+            warn!(
+                "Failed to process path after {} retries: {}",
+                MAX_RETRIES, current_path
+            );
+            debug!("Error details: {:?}", err);
+            // Continue with next directory instead of returning error
         }
     }
     info!("Processed {} files", pb.position());
@@ -468,12 +563,12 @@ pub async fn download_file_with_retries(
     checksum: Option<HashObject>,
     m_pb: MultiProgress,
 ) -> Result<()> {
-    for attempt in 1..=3 {
+    for attempt in 1..=MAX_RETRIES {
         match attempt_download_file(raw_url, local_path, client, checksum.clone(), m_pb.clone())
             .await
         {
             std::result::Result::Ok(_) => return Ok(()),
-            Err(e) if attempt < 3 => info!(
+            Err(e) if attempt < MAX_RETRIES => info!(
                 "Download attempt #{} for '{}' failed: {}. Retrying...",
                 attempt, raw_url, e
             ),

@@ -33,6 +33,9 @@ struct Cli {
     #[arg(short = 'j', long, global = true, default_value_t = 4)]
     threads: usize,
 
+    #[arg(short = 't', long, global = true, default_value = "")]
+    token: String,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -64,6 +67,8 @@ static ALIST_URL: Lazy<String> = Lazy::new(|| {
 });
 
 static THREADS_NUM: Lazy<usize> = Lazy::new(|| Cli::parse().threads);
+
+static TOKEN: Lazy<String> = Lazy::new(|| Cli::parse().token);
 
 async fn remove_noexist_files(
     local_path: String,
