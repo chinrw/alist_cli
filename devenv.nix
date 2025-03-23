@@ -9,7 +9,7 @@
 
   # https://devenv.sh/languages/
   languages.rust = {
-    channel = "nightly";
+    channel = "stable";
     components = [
       "cargo"
       "rust-src"
