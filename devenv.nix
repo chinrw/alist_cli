@@ -5,11 +5,11 @@
   env.GREET = "devenv";
 
   # https://devenv.sh/packages/
-  packages = [ pkgs.git ];
+  packages = with pkgs; [ git mold llvmPackages_20.clangUseLLVM ];
 
   # https://devenv.sh/languages/
   languages.rust = {
-    channel = "stable";
+    channel = "nightly";
     components = [
       "cargo"
       "rust-src"
@@ -18,6 +18,7 @@
       "rust-analyzer"
       "rustfmt"
     ];
+    mold.enable = false;
     enable = true;
   };
 
