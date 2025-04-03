@@ -25,6 +25,7 @@ use tokio::{
 use url::Url;
 
 use crate::{ALIST_URL, TOKEN}; // Use the async-aware Mutex from tokio
+use governor::{Quota, RateLimiter};
 
 const META_SUFF: [&str; 9] = [
     "nfo", "jpg", "png", "svg", "ass", "srt", "sup", "vtt", "txt",
@@ -219,6 +220,56 @@ pub(crate) struct EntryWithPath {
     pub(crate) provider: String,
 }
 
+// Rate-limited API request function
+async fn rate_limited_request<T>(
+    client: &Client,
+    url: String,
+    payload: T,
+) -> Result<reqwest::Response>
+where
+    T: serde::Serialize,
+{
+    let tpslimit = *crate::TPSLIMIT;
+    // Wait until we're allowed to make a request
+    RateLimiter::direct(
+        Quota::per_second(std::num::NonZeroU32::new(tpslimit).expect("Governor rate is 0"))
+            .allow_burst(
+                std::num::NonZeroU32::new(*crate::TPSLIMIT_BURST).expect("Governor rate is 0"),
+            ),
+    )
+    .until_ready()
+    .await;
+
+    // Now make the request
+    let response = client
+        .post(url)
+        .json(&payload)
+        .header("Authorization", TOKEN.clone())
+        .header("Content-Type", "application/json")
+        .send()
+        .await?;
+
+    Ok(response)
+}
+
+// Rate-limited GET request
+async fn rate_limited_get(client: &Client, url: &str) -> Result<reqwest::Response> {
+    // Wait until we're allowed to make a request
+    RateLimiter::direct(
+        Quota::per_second(std::num::NonZeroU32::new(*crate::TPSLIMIT).expect("Governor rate is 0"))
+            .allow_burst(
+                std::num::NonZeroU32::new(*crate::TPSLIMIT_BURST).expect("Governor rate is 0"),
+            ),
+    )
+    .until_ready()
+    .await;
+
+    // Now make the request
+    let response = client.get(url).send().await?;
+
+    Ok(response)
+}
+
 pub(crate) async fn get_path_structure(
     path: String,
     m_pb: MultiProgress,
@@ -237,13 +288,8 @@ pub(crate) async fn get_path_structure(
 }
 
 async fn get_api_response(client: &Client, payload: &FileInfoRequest) -> Result<ApiResponse> {
-    let response = client
-        .post(format!("{}/api/fs/list", *ALIST_URL))
-        .json(payload)
-        .header("Authorization", TOKEN.clone())
-        .header("Content-Type", "application/json")
-        .send()
-        .await?;
+    let response =
+        rate_limited_request(client, format!("{}/api/fs/list", *ALIST_URL), payload).await?;
 
     if !response.status().is_success() {
         return Err(anyhow!("HTTP error: {}", response.status()));
@@ -419,12 +465,8 @@ pub(crate) async fn get_raw_url(client: &Client, entry: &EntryWithPath) -> Resul
     };
 
     trace!("metadata current payload:{:?}", payload);
-    let response = client
-        .post(format!("{}/api/fs/get", *ALIST_URL))
-        .json(&payload)
-        .header("Content-Type", "application/json")
-        .send()
-        .await?;
+    let response =
+        rate_limited_request(client, format!("{}/api/fs/get", *ALIST_URL), payload).await?;
 
     if response.status().is_success() {
         let api_response: ApiResponse = response.json().await?;
@@ -612,10 +654,8 @@ async fn attempt_download_file(
         }
     }
 
-    // Send the GET request
-    let mut response = client
-        .get(raw_url)
-        .send()
+    // Send GET Request
+    let mut response = rate_limited_get(client, raw_url)
         .await
         .map_err(|e| anyhow!("Request failed for '{}': {}", raw_url, e))?;
 

@@ -33,8 +33,16 @@ struct Cli {
     #[arg(short = 'j', long, global = true, default_value_t = 4)]
     threads: usize,
 
+    /// alist token
     #[arg(short = 't', long, global = true, default_value = "")]
     token: String,
+
+    /// Limit HTTP transactions per second to this
+    #[arg(long, global = true, default_value_t = 50)]
+    tpslimit: u32,
+
+    #[arg(long, global = true, default_value_t = 100)]
+    tpslimit_burst: u32,
 
     #[command(subcommand)]
     command: Commands,
@@ -69,6 +77,13 @@ static ALIST_URL: Lazy<String> = Lazy::new(|| {
 static THREADS_NUM: Lazy<usize> = Lazy::new(|| Cli::parse().threads);
 
 static TOKEN: Lazy<String> = Lazy::new(|| Cli::parse().token);
+
+// Rate limiting constants
+// Adjust based on API requirements
+static TPSLIMIT: Lazy<u32> = Lazy::new(|| Cli::parse().tpslimit);
+
+// Allow occasional bursts of requests
+static TPSLIMIT_BURST: Lazy<u32> = Lazy::new(|| Cli::parse().tpslimit_burst);
 
 async fn remove_noexist_files(
     local_path: String,

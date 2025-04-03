@@ -25,6 +25,7 @@ sha1 = "0"
 md-5 = "0"
 indicatif = "0"
 walkdir = "2"
+governor = "0"
 
 [profile.release]
 opt-level = 3
