@@ -40,7 +40,12 @@ struct Cli {
     token: String,
 
     /// Limit HTTP transactions per second to this
-    #[arg(long, global = true, default_value_t = 50)]
+    #[arg(
+        long,
+        global = true,
+        default_value_t = 50,
+        allow_negative_numbers(false)
+    )]
     tpslimit: u32,
 
     #[command(subcommand)]

@@ -234,9 +234,7 @@ pub(crate) struct EntryWithPath {
 
 static TPS_RATE_LIMITER: Lazy<RateLimiter<NotKeyed, InMemoryState, DefaultClock>> =
     Lazy::new(|| {
-        let quota = Quota::per_second(
-            NonZeroU32::new(*crate::TPSLIMIT).expect("tpslimit should be nonzero"),
-        );
+        let quota = Quota::per_second(NonZeroU32::new(*crate::TPSLIMIT).unwrap());
         RateLimiter::direct(quota)
     });
 
