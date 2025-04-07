@@ -11,9 +11,14 @@ use std::{
 use anyhow::{Ok, Result, anyhow};
 use digest::{Digest, OutputSizeUser, generic_array::ArrayLength};
 use futures::stream::{self, StreamExt};
-use governor::{Quota, RateLimiter};
+use governor::{
+    Quota, RateLimiter,
+    clock::DefaultClock,
+    state::{InMemoryState, NotKeyed},
+};
 use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use md5::Md5;
+use once_cell::sync::Lazy;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -227,7 +232,14 @@ pub(crate) struct EntryWithPath {
     pub(crate) provider: String,
 }
 
-// Rate-limited API request function
+static TPS_RATE_LIMITER: Lazy<RateLimiter<NotKeyed, InMemoryState, DefaultClock>> =
+    Lazy::new(|| {
+        let quota = Quota::per_second(
+            NonZeroU32::new(*crate::TPSLIMIT).expect("tpslimit should be nonzero"),
+        );
+        RateLimiter::direct(quota)
+    });
+
 async fn rate_limited_request<T>(
     client: &Client,
     url: String,
@@ -237,12 +249,7 @@ where
     T: serde::Serialize,
 {
     // Wait until we're allowed to make a request
-    RateLimiter::direct(
-        Quota::per_second(NonZeroU32::new(*crate::TPSLIMIT).expect("Governor rate is 0"))
-            .allow_burst(NonZeroU32::new(*crate::TPSLIMIT_BURST).expect("Governor rate is 0")),
-    )
-    .until_ready()
-    .await;
+    TPS_RATE_LIMITER.until_ready().await;
 
     // Now make the request
     let response = client
@@ -259,12 +266,7 @@ where
 // Rate-limited GET request
 async fn rate_limited_get(client: &Client, url: &str) -> Result<reqwest::Response> {
     // Wait until we're allowed to make a request
-    RateLimiter::direct(
-        Quota::per_second(NonZeroU32::new(*crate::TPSLIMIT).expect("Governor rate is 0"))
-            .allow_burst(NonZeroU32::new(*crate::TPSLIMIT_BURST).expect("Governor rate is 0")),
-    )
-    .until_ready()
-    .await;
+    TPS_RATE_LIMITER.until_ready().await;
 
     // Now make the request
     let response = client.get(url).send().await?;
