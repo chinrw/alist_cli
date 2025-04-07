@@ -13,8 +13,8 @@ use indicatif::MultiProgress;
 use once_cell::sync::Lazy;
 use tokio::fs;
 use tracing::{info, trace};
-use tracing_subscriber::EnvFilter;
-use tracing_subscriber::layer::SubscriberExt;
+use tracing_bridge::MakeSuspendingWriter;
+use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 use walkdir::WalkDir;
 
 #[derive(Parser)]
@@ -141,11 +141,18 @@ async fn remove_noexist_files(
 #[tokio::main]
 async fn main() -> Result<()> {
     let m_pb = MultiProgress::new();
-    let wrapper = tracing_bridge::TracingWrapper::new(m_pb.clone());
+    // let wrapper = tracing_bridge::TracingWrapper::new(m_pb.clone());
+
+    let make_writer = MakeSuspendingWriter::new(std::io::stdout, m_pb.clone());
+    let fmt_layer = fmt::layer()
+        .with_writer(make_writer)
+        .with_ansi(true)
+        .with_file(true)
+        .with_line_number(true);
 
     // Set up the tracing subscriber
-    let subscriber = tracing_subscriber::Registry::default()
-        .with(wrapper.layer())
+    let subscriber = Registry::default()
+        .with(fmt_layer)
         .with(EnvFilter::from_default_env());
 
     tracing::subscriber::set_global_default(subscriber)?;
