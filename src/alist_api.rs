@@ -1,6 +1,7 @@
 use std::{
     collections::{HashSet, VecDeque},
     fmt::Write,
+    num::NonZeroU32,
     ops::Add,
     path::{Path, PathBuf},
     sync::Arc,
@@ -10,13 +11,13 @@ use std::{
 use anyhow::{Ok, Result, anyhow};
 use digest::{Digest, OutputSizeUser, generic_array::ArrayLength};
 use futures::stream::{self, StreamExt};
+use governor::{Quota, RateLimiter};
 use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use md5::Md5;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha1::Sha1;
-use std::num::NonZeroU32;
 use tokio::{
     fs::{self, File},
     io::{AsyncReadExt, AsyncWriteExt, BufReader},
@@ -26,7 +27,6 @@ use tracing::{Level, debug, enabled, error, info, trace, warn};
 use url::Url;
 
 use crate::{ALIST_URL, TOKEN}; // Use the async-aware Mutex from tokio
-use governor::{Quota, RateLimiter};
 
 const META_SUFF: [&str; 9] = [
     "nfo", "jpg", "png", "svg", "ass", "srt", "sup", "vtt", "txt",
@@ -72,10 +72,16 @@ impl HashObject {
 
         let pb = if is_verbose_logging {
             let pb = m_pb.insert_from_back(1, ProgressBar::new(file_size));
-            pb.set_style(ProgressStyle::with_template("{spinner:.green} {msg} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
-            .unwrap()
-            .with_key("eta", |state: &ProgressState, w: &mut dyn Write| write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap())
-            .progress_chars("#>-"));
+            pb.set_style(
+                ProgressStyle::with_template(
+                    "{spinner:.green} {msg} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})",
+                )
+                .unwrap()
+                .with_key("eta", |state: &ProgressState, w: &mut dyn Write| {
+                    write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap()
+                })
+                .progress_chars("#>-"),
+            );
             pb
         } else {
             // Create a hidden/dummy progress bar when in debug mode
@@ -555,8 +561,8 @@ pub(crate) async fn copy_metadata(
     Ok(())
 }
 
-/// This function is used by BAIDU_NETDISK to encryptstr md5sum res to match the md5 from provider
-/// However, this may not provide the correct md5
+/// This function is used by BAIDU_NETDISK to encryptstr md5sum res to match the
+/// md5 from provider However, this may not provide the correct md5
 pub fn _encrypt_md5(md5str: &str) -> String {
     // 1) Rearrange the string: [8..16] + [0..8] + [24..32] + [16..24]
     let rearranged = format!(
@@ -567,7 +573,8 @@ pub fn _encrypt_md5(md5str: &str) -> String {
         &md5str[16..24],
     );
 
-    // 2) Build `encryptstr`: for each char, parse as hex digit, XOR with (15 & index), format as hex
+    // 2) Build `encryptstr`: for each char, parse as hex digit, XOR with (15 &
+    //    index), format as hex
     let mut encryptstr: String =
         rearranged
             .chars()
