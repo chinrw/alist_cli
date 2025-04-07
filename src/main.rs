@@ -1,6 +1,6 @@
 mod alist_api;
 mod download;
-mod log_bridge;
+mod tracing_bridge;
 
 pub use std::{
     collections::HashSet,
@@ -10,9 +10,11 @@ pub use std::{
 use anyhow::Result;
 use clap::Parser;
 use indicatif::MultiProgress;
-use log::{info, trace};
 use once_cell::sync::Lazy;
 use tokio::fs;
+use tracing::{info, trace};
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::layer::SubscriberExt;
 use walkdir::WalkDir;
 
 #[derive(Parser)]
@@ -138,31 +140,15 @@ async fn remove_noexist_files(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let logger = env_logger::Builder::new()
-        .parse_filters(&std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()))
-        .write_style(env_logger::WriteStyle::Always)
-        // .format(|buf, record| {
-        //     let timestamp = buf.timestamp();
-        //     let info_style = buf.default_level_style(log::Level::Info);
-        //
-        //     writeln!(
-        //         buf,
-        //         "[{timestamp} {info_style}{:<5}{info_style:#} {}:{} {}] {}",
-        //         record.level(),                       // Log level (e.g., DEBUG, INFO)
-        //         record.file().unwrap_or("<unknown>"), // File name
-        //         record.line().unwrap_or(0),           // Line number
-        //         record.module_path().unwrap_or("<unknown>"), // Module path
-        //         record.args()                         // The log message
-        //     )
-        // })
-        .build();
-
-    let level = logger.filter();
     let m_pb = MultiProgress::new();
-    log_bridge::LogWrapper::new(m_pb.clone(), logger)
-        .try_init()
-        .unwrap();
-    log::set_max_level(level);
+    let wrapper = tracing_bridge::TracingWrapper::new(m_pb.clone());
+
+    // Set up the tracing subscriber
+    let subscriber = tracing_subscriber::Registry::default()
+        .with(wrapper.layer())
+        .with(EnvFilter::from_default_env());
+
+    tracing::subscriber::set_global_default(subscriber)?;
 
     let args = Cli::parse();
 

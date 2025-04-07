@@ -11,17 +11,18 @@ use anyhow::{Ok, Result, anyhow};
 use digest::{Digest, OutputSizeUser, generic_array::ArrayLength};
 use futures::stream::{self, StreamExt};
 use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
-use log::{Level, debug, error, info, log_enabled, trace, warn};
 use md5::Md5;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha1::Sha1;
+use std::num::NonZeroU32;
 use tokio::{
     fs::{self, File},
     io::{AsyncReadExt, AsyncWriteExt, BufReader},
     sync::Mutex,
 };
+use tracing::{Level, debug, enabled, error, info, trace, warn};
 use url::Url;
 
 use crate::{ALIST_URL, TOKEN}; // Use the async-aware Mutex from tokio
@@ -67,7 +68,7 @@ impl HashObject {
         <<D as OutputSizeUser>::OutputSize as Add>::Output: ArrayLength<u8>,
     {
         // Check if we're in verbose log mode if true print hash progress bar
-        let is_verbose_logging = log_enabled!(Level::Debug);
+        let is_verbose_logging = enabled!(Level::DEBUG);
 
         let pb = if is_verbose_logging {
             let pb = m_pb.insert_from_back(1, ProgressBar::new(file_size));
@@ -229,13 +230,10 @@ async fn rate_limited_request<T>(
 where
     T: serde::Serialize,
 {
-    let tpslimit = *crate::TPSLIMIT;
     // Wait until we're allowed to make a request
     RateLimiter::direct(
-        Quota::per_second(std::num::NonZeroU32::new(tpslimit).expect("Governor rate is 0"))
-            .allow_burst(
-                std::num::NonZeroU32::new(*crate::TPSLIMIT_BURST).expect("Governor rate is 0"),
-            ),
+        Quota::per_second(NonZeroU32::new(*crate::TPSLIMIT).expect("Governor rate is 0"))
+            .allow_burst(NonZeroU32::new(*crate::TPSLIMIT_BURST).expect("Governor rate is 0")),
     )
     .until_ready()
     .await;
@@ -256,10 +254,8 @@ where
 async fn rate_limited_get(client: &Client, url: &str) -> Result<reqwest::Response> {
     // Wait until we're allowed to make a request
     RateLimiter::direct(
-        Quota::per_second(std::num::NonZeroU32::new(*crate::TPSLIMIT).expect("Governor rate is 0"))
-            .allow_burst(
-                std::num::NonZeroU32::new(*crate::TPSLIMIT_BURST).expect("Governor rate is 0"),
-            ),
+        Quota::per_second(NonZeroU32::new(*crate::TPSLIMIT).expect("Governor rate is 0"))
+            .allow_burst(NonZeroU32::new(*crate::TPSLIMIT_BURST).expect("Governor rate is 0")),
     )
     .until_ready()
     .await;
