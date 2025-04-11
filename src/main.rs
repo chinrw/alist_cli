@@ -43,7 +43,7 @@ struct Cli {
     #[arg(
         long,
         global = true,
-        default_value_t = 50,
+        default_value_t = u32::MAX,
         allow_negative_numbers(false)
     )]
     tpslimit: u32,
