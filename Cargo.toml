@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 reqwest = { version = "0", features = [
 	"json",
-	"stream",
+	"socks",
 	"rustls-tls",
 ], default-features = false }
 tokio = { version = "1", features = ["full"] }

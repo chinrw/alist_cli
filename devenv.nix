@@ -14,6 +14,7 @@
       "cargo"
       "rust-src"
       "rustc"
+      "rust-std"
       "clippy"
       "rust-analyzer"
       "rustfmt"
@@ -38,7 +39,6 @@
     hello
     git --version
     rustc --version
-    cargo build -r
     export PATH="$PWD/target/release:$PATH"
   '';
 
