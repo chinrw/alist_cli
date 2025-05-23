@@ -45,6 +45,7 @@ pub const FILE_STRM: [&str; 14] = [
 const ALIST_CONCURRENT_LIMIT: usize = 10;
 const MAX_RETRIES: u32 = 3;
 const RETRY_DELAY_MS: u64 = 1000;
+const REQ_TIMEOUT: u64 = 5;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(untagged)]
@@ -247,11 +248,17 @@ where
     T: serde::Serialize,
 {
     // Wait until we're allowed to make a request
-    TPS_RATE_LIMITER.until_ready().await;
+    tokio::time::timeout(
+        Duration::from_secs(REQ_TIMEOUT),
+        TPS_RATE_LIMITER.until_ready(),
+    )
+    .await
+    .map_err(|_| anyhow!("Rate limiter timeout"))?;
 
     // Now make the request
     let response = client
         .post(url)
+        .timeout(Duration::from_secs(REQ_TIMEOUT))
         .json(&payload)
         .header("Authorization", TOKEN.clone())
         .header("Content-Type", "application/json")
@@ -264,7 +271,12 @@ where
 // Rate-limited GET request
 async fn rate_limited_get(client: &Client, url: &str) -> Result<reqwest::Response> {
     // Wait until we're allowed to make a request
-    TPS_RATE_LIMITER.until_ready().await;
+    tokio::time::timeout(
+        Duration::from_secs(REQ_TIMEOUT),
+        TPS_RATE_LIMITER.until_ready(),
+    )
+    .await
+    .map_err(|_| anyhow!("Rate limiter timeout"))?;
 
     // Now make the request
     let response = client.get(url).send().await?;
