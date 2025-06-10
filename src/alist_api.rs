@@ -382,7 +382,7 @@ async fn process_folder_contents(
                 for file in &folders_info.content.unwrap() {
                     let full_path = format!("{}/{}", current_path, file.name);
                     debug!("entry path: {}", full_path);
-                    pb.set_message(format!("Scanning: {}", full_path));
+                    pb.set_message(format!("Scanning: {full_path}"));
 
                     // Add this entry and its full path to the list
                     entries_with_paths.push(EntryWithPath {
@@ -660,13 +660,12 @@ async fn attempt_download_file(
 ) -> Result<()> {
     debug!("Download to local file path: {}", local_path.display());
 
-    if let Some(checksum_obj) = checksum.clone() {
-        if checksum_obj
+    if let Some(checksum_obj) = checksum.clone() &&
+        checksum_obj
             .verify_file_checksum(local_path, m_pb.clone())
             .await?
-        {
-            return Ok(());
-        }
+    {
+        return Ok(());
     }
 
     // Send GET Request

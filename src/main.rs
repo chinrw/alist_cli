@@ -182,11 +182,11 @@ async fn main() -> Result<()> {
                 .filter_map(|file| {
                     let path = Path::new(&file);
                     // Check if the file extension is valid
-                    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                        if alist_api::FILE_STRM.contains(&ext) {
-                            // Replace the file's extension with "strm"
-                            return path.with_extension("strm").to_str().map(String::from);
-                        }
+                    if let Some(ext) = path.extension().and_then(|e| e.to_str()) &&
+                        alist_api::FILE_STRM.contains(&ext)
+                    {
+                        // Replace the file's extension with "strm"
+                        return path.with_extension("strm").to_str().map(String::from);
                     }
                     Some(file)
                 })
