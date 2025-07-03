@@ -1,8 +1,13 @@
 inputs:
-  nixpkgs:
-    url: github:nixos/nixpkgs/nixos-unstable
   fenix:
     url: github:nix-community/fenix
+    inputs:
+      nixpkgs:
+        follows: nixpkgs
+  nixpkgs:
+    url: github:nixos/nixpkgs/nixos-unstable
+  rust-overlay:
+    url: github:oxalica/rust-overlay
     inputs:
       nixpkgs:
         follows: nixpkgs

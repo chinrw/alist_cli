@@ -1,4 +1,4 @@
-{ pkgs, lib, config, inputs, ... }:
+{ pkgs, lib, config, ... }:
 
 {
   # https://devenv.sh/basics/
@@ -9,6 +9,7 @@
 
   # https://devenv.sh/languages/
   languages.rust = {
+    enable = true;
     channel = "nightly";
     components = [
       "cargo"
@@ -20,7 +21,6 @@
       "rustfmt"
     ];
     mold.enable = false;
-    enable = true;
   };
 
 
