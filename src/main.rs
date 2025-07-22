@@ -10,7 +10,7 @@ pub use std::{
 use anyhow::Result;
 use clap::Parser;
 use indicatif::MultiProgress;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use tokio::fs;
 use tracing::{info, trace};
 use tracing_bridge::MakeSuspendingWriter;
@@ -73,18 +73,24 @@ enum Commands {
     },
 }
 
-static ALIST_URL: Lazy<String> = Lazy::new(|| {
-    // This closure runs the first time SERVER_ADDRESS is accessed.
-    Cli::parse().server_address
+pub struct Config {
+    pub server_address: String,
+    pub threads: usize,
+    pub token: String,
+    pub tpslimit: u32,
+    pub concurrent_limit: usize,
+}
+
+static CONFIG: LazyLock<Config> = LazyLock::new(|| {
+    let cli = Cli::parse();
+    Config {
+        server_address: cli.server_address,
+        threads: cli.threads,
+        token: cli.token,
+        tpslimit: cli.tpslimit,
+        concurrent_limit: std::cmp::max(cli.threads, 10), // Default to max of threads or 10
+    }
 });
-
-static THREADS_NUM: Lazy<usize> = Lazy::new(|| Cli::parse().threads);
-
-static TOKEN: Lazy<String> = Lazy::new(|| Cli::parse().token);
-
-// Rate limiting constants
-// Adjust based on API requirements
-static TPSLIMIT: Lazy<u32> = Lazy::new(|| Cli::parse().tpslimit);
 
 async fn remove_noexist_files(
     local_path: String,
@@ -94,9 +100,9 @@ async fn remove_noexist_files(
 ) -> Result<()> {
     // The realpath on the filesystem
     info!("Start to remove non-existent files");
-    let folder_path = local_path.clone() + &url_path;
+    let folder_path = std::path::Path::new(&local_path).join(&url_path.trim_start_matches('/'));
 
-    trace!("folder_path {}", folder_path);
+    trace!("folder_path {}", folder_path.display());
     let iter = WalkDir::new(&folder_path)
         .into_iter()
         .filter_map(|entry| entry.ok())
@@ -160,7 +166,8 @@ async fn main() -> Result<()> {
 
     match args.command {
         Commands::AutoSym { local_path, delete } => {
-            let res = alist_api::get_path_structure(args.url_path.clone(), m_pb.clone()).await?;
+            let client = std::sync::Arc::new(reqwest::Client::builder().no_proxy().build()?);
+            let res = alist_api::get_path_structure(args.url_path.clone(), m_pb.clone(), client.clone()).await?;
 
             // get file extensions for further baking
             let files_with_ext = res
@@ -174,8 +181,8 @@ async fn main() -> Result<()> {
                 })
                 .collect();
 
-            alist_api::copy_metadata(&files_with_ext, &local_path, m_pb.clone()).await?;
-            alist_api::create_strm_file(&files_with_ext, &local_path, m_pb).await?;
+            alist_api::copy_metadata(&files_with_ext, &local_path, m_pb.clone(), client.clone()).await?;
+            alist_api::create_strm_file(&files_with_ext, &local_path, m_pb, client).await?;
             let files_set: HashSet<String> = res
                 .into_iter()
                 .map(|s| s.path_str)

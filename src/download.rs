@@ -6,7 +6,7 @@ use reqwest::Client;
 use tokio::{sync::Semaphore, task::JoinSet};
 
 use crate::{
-    THREADS_NUM,
+    CONFIG,
     alist_api::{download_file_with_retries, get_path_structure, get_raw_url, provider_checksum},
 };
 
@@ -15,10 +15,10 @@ pub(super) async fn download_folders(
     local_path: &str,
     m_pb: MultiProgress,
 ) -> Result<()> {
-    let res = get_path_structure(url_path, m_pb.clone()).await?;
+    let client = Arc::new(Client::builder().no_proxy().build()?);
+    let res = get_path_structure(url_path, m_pb.clone(), client.clone()).await?;
     let mut tasks = JoinSet::new();
-    let client = Arc::new(Client::new());
-    let semaphore = Arc::new(Semaphore::new(*THREADS_NUM)); // Limit concurrency to 4
+    let semaphore = Arc::new(Semaphore::new(CONFIG.threads));
 
     for f in res {
         let client_cloned = Arc::clone(&client);

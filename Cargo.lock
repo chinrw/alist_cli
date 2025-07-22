@@ -37,7 +37,6 @@ dependencies = [
  "governor",
  "indicatif",
  "md-5",
- "once_cell",
  "percent-encoding",
  "reqwest",
  "serde",

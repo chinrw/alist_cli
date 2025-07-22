@@ -18,7 +18,7 @@ use governor::{
 };
 use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use md5::Md5;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -31,7 +31,7 @@ use tokio::{
 use tracing::{Level, debug, enabled, error, info, trace, warn};
 use url::Url;
 
-use crate::{ALIST_URL, TOKEN}; // Use the async-aware Mutex from tokio
+use crate::CONFIG; // Use the async-aware Mutex from tokio
 
 const META_SUFF: [&str; 9] = [
     "nfo", "jpg", "png", "svg", "ass", "srt", "sup", "vtt", "txt",
@@ -42,7 +42,6 @@ pub const FILE_STRM: [&str; 14] = [
     "mp3",
 ];
 
-const ALIST_CONCURRENT_LIMIT: usize = 10;
 const MAX_RETRIES: u32 = 3;
 const RETRY_DELAY_MS: u64 = 1000;
 const REQ_TIMEOUT: u64 = 5;
@@ -233,9 +232,9 @@ pub(crate) struct EntryWithPath {
     pub(crate) provider: String,
 }
 
-static TPS_RATE_LIMITER: Lazy<RateLimiter<NotKeyed, InMemoryState, DefaultClock>> =
-    Lazy::new(|| {
-        let quota = Quota::per_second(NonZeroU32::new(*crate::TPSLIMIT).unwrap());
+static TPS_RATE_LIMITER: LazyLock<RateLimiter<NotKeyed, InMemoryState, DefaultClock>> =
+    LazyLock::new(|| {
+        let quota = Quota::per_second(NonZeroU32::new(CONFIG.tpslimit).unwrap());
         RateLimiter::direct(quota)
     });
 
@@ -260,7 +259,7 @@ where
         .post(url)
         .timeout(Duration::from_secs(REQ_TIMEOUT))
         .json(&payload)
-        .header("Authorization", TOKEN.clone())
+        .header("Authorization", &CONFIG.token)
         .header("Content-Type", "application/json")
         .send()
         .await?;
@@ -287,6 +286,7 @@ async fn rate_limited_get(client: &Client, url: &str) -> Result<reqwest::Respons
 pub(crate) async fn get_path_structure(
     path: String,
     m_pb: MultiProgress,
+    client: Arc<Client>,
 ) -> Result<Vec<EntryWithPath>> {
     let visited_paths = Arc::new(Mutex::new(HashSet::new()));
     {
@@ -295,7 +295,7 @@ pub(crate) async fn get_path_structure(
     }
 
     // Fetch the folder contents iteratively and get all entries with paths
-    let entries_with_paths = fetch_folder_contents(path, visited_paths.clone(), m_pb).await?;
+    let entries_with_paths = fetch_folder_contents(path, visited_paths.clone(), m_pb, client).await?;
 
     // Return the collected entries along with their paths
     Ok(entries_with_paths)
@@ -303,7 +303,7 @@ pub(crate) async fn get_path_structure(
 
 async fn get_api_response(client: &Client, payload: &FileInfoRequest) -> Result<ApiResponse> {
     let response =
-        rate_limited_request(client, format!("{}/api/fs/list", *ALIST_URL), payload).await?;
+        rate_limited_request(client, format!("{}/api/fs/list", CONFIG.server_address), payload).await?;
 
     if !response.status().is_success() {
         return Err(anyhow!("HTTP error: {}", response.status()));
@@ -421,8 +421,8 @@ async fn fetch_folder_contents(
     path: String,
     visited_paths: Arc<Mutex<HashSet<String>>>,
     m_pb: MultiProgress,
+    client: Arc<Client>,
 ) -> Result<Vec<EntryWithPath>> {
-    let client = Client::builder().no_proxy().build()?;
     let mut entries_with_paths = Vec::new();
     let mut directories_to_process = VecDeque::new();
     directories_to_process.push_back(path.clone());
@@ -480,7 +480,7 @@ pub(crate) async fn get_raw_url(client: &Client, entry: &EntryWithPath) -> Resul
 
     trace!("metadata current payload:{:?}", payload);
     let response =
-        rate_limited_request(client, format!("{}/api/fs/get", *ALIST_URL), payload).await?;
+        rate_limited_request(client, format!("{}/api/fs/get", CONFIG.server_address), payload).await?;
 
     if response.status().is_success() {
         let api_response: ApiResponse = response.json().await?;
@@ -502,6 +502,7 @@ pub(crate) async fn copy_metadata(
     files_with_ext: &Vec<(String, &EntryWithPath)>,
     output_path: &str,
     m_pb: MultiProgress,
+    client: Arc<Client>,
 ) -> Result<()> {
     info!("Start to copy metadata");
 
@@ -523,7 +524,6 @@ pub(crate) async fn copy_metadata(
         .add(ProgressBar::new(files_copy.len() as u64))
         .with_style(sty.clone());
 
-    let client = Arc::new(Client::builder().no_proxy().build()?);
     // Create a stream of futures.
     let tasks = stream::iter(files_copy.into_iter().map(|file| {
         // Clone necessary values for the async block.
@@ -556,7 +556,7 @@ pub(crate) async fn copy_metadata(
             Ok(())
         }
     }))
-    .buffer_unordered(ALIST_CONCURRENT_LIMIT);
+    .buffer_unordered(CONFIG.concurrent_limit);
 
     // Wait for all tasks to complete.
     tasks
@@ -723,8 +723,8 @@ pub(crate) async fn create_strm_file(
     files_with_ext: &Vec<(String, &EntryWithPath)>,
     output_path: &str,
     m_pb: MultiProgress,
+    client: Arc<Client>,
 ) -> Result<()> {
-    let client = Client::builder().no_proxy().build()?;
     let files_strm = files_with_ext
         .iter()
         .filter(|(ext, _)| FILE_STRM.contains(&ext.as_str()));
@@ -756,7 +756,7 @@ pub(crate) async fn create_strm_file(
             Ok((parsed_url, local_path))
         }
     }))
-    .buffer_unordered(ALIST_CONCURRENT_LIMIT);
+    .buffer_unordered(CONFIG.concurrent_limit);
 
     while let Some(result) = results.next().await {
         let (raw_url, local_path) = result?;
