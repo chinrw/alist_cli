@@ -9,7 +9,7 @@
 
 ### 🧱 Code Structure & Modularity
 
-- **Never create a file longer than 800 lines of code.** If a file approaches this limit, refactor by splitting it into modules or helper files.
+- **Never create a file longer than 500 lines of code.** If a file approaches this limit, refactor by splitting it into modules or helper files.
 - **Organize code into clearly separated modules**, grouped by feature or responsibility:
   - `main.rs` - CLI argument parsing and main application logic
   - `alist_api.rs` - API client and data structures
@@ -94,11 +94,22 @@
 
 ### 🛠️ Development Workflow
 
-- **Use `cargo check`** for fast compilation checking during development.
-- **Use `cargo build --release`** for optimized production builds.
-- **Run `cargo test`** before committing changes.
-- **Use `cargo clippy -- -D warnings`** to enforce code quality.
+**Development Commands (Always Allowed):**
+- **Use `cargo check`** for fast compilation checking during development - run frequently while coding.
+- **Use `cargo build --release`** for optimized production builds when ready to test performance.
+- **Run `cargo test`** before committing changes to ensure all tests pass.
+- **Use `cargo clippy -- -D warnings`** to enforce strict code quality - treat warnings as errors.
+- **Use `cargo fmt`** to automatically format code according to Rust standards.
 - **Check compilation with different feature flags** if the project uses them.
+
+**Quality Assurance Pipeline:**
+1. Run `cargo fmt` to format code
+2. Run `cargo check` for quick compilation validation
+3. Run `cargo clippy -- -D warnings` for linting (must pass with zero warnings)
+4. Run `cargo test` to ensure all tests pass
+5. Run `cargo build --release` for final production build verification
+
+**AI Usage:** Claude is always permitted to run these cargo commands to maintain code quality and verify changes.
 
 ### 🔒 Security & Safety
 
