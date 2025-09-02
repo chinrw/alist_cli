@@ -1,6 +1,7 @@
-mod alist_api;
+mod api;
 mod download;
 mod tracing_bridge;
+mod utils;
 
 pub use std::{
     collections::HashSet,
@@ -167,7 +168,8 @@ async fn main() -> Result<()> {
     match args.command {
         Commands::AutoSym { local_path, delete } => {
             let client = std::sync::Arc::new(reqwest::Client::builder().no_proxy().build()?);
-            let res = alist_api::get_path_structure(args.url_path.clone(), m_pb.clone(), client.clone()).await?;
+            let res = api::get_path_structure(args.url_path.clone(), m_pb.clone(), client.clone())
+                .await?;
 
             // get file extensions for further baking
             let files_with_ext: Vec<_> = res
@@ -181,8 +183,8 @@ async fn main() -> Result<()> {
                 })
                 .collect();
 
-            alist_api::copy_metadata(&files_with_ext, &local_path, m_pb.clone(), client.clone()).await?;
-            alist_api::create_strm_file(&files_with_ext, &local_path, m_pb, client).await?;
+            api::copy_metadata(&files_with_ext, &local_path, m_pb.clone(), client.clone()).await?;
+            api::create_strm_file(&files_with_ext, &local_path, m_pb, client).await?;
             let files_set: HashSet<String> = res
                 .into_iter()
                 .map(|s| s.path_str)
@@ -190,7 +192,7 @@ async fn main() -> Result<()> {
                     let path = Path::new(&file);
                     // Check if the file extension is valid
                     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                        if alist_api::FILE_STRM.contains(&ext) {
+                        if api::FILE_STRM.contains(&ext) {
                             // Replace the file's extension with "strm"
                             return path.with_extension("strm").to_str().map(String::from);
                         }

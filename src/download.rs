@@ -7,7 +7,8 @@ use tokio::{sync::Semaphore, task::JoinSet};
 
 use crate::{
     CONFIG,
-    alist_api::{download_file_with_retries, get_path_structure, get_raw_url, provider_checksum},
+    api::{get_path_structure, get_raw_url},
+    utils::{download_file_with_retries, provider_checksum},
 };
 
 pub(super) async fn download_folders(
