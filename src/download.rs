@@ -1,6 +1,6 @@
 use std::{path::PathBuf, sync::Arc};
 
-use anyhow::{Ok, Result};
+use anyhow::Result;
 use indicatif::MultiProgress;
 use reqwest::Client;
 use tokio::{sync::Semaphore, task::JoinSet};
@@ -32,7 +32,7 @@ pub(super) async fn download_folders(
         let m_clone = m_pb.clone();
         tasks.spawn(async move {
             // use semaphore to limit the concurrent downloader
-            let _permit = semaphore_cloned.acquire().await.unwrap();
+            let _permit = semaphore_cloned.acquire().await?;
             let raw_url = get_raw_url(&client_cloned, &f).await?;
             let hash_info = if provider_checksum(&f) {
                 f.entry.hash_info.clone()
@@ -51,7 +51,11 @@ pub(super) async fn download_folders(
         });
     }
 
-    let _ = tasks.join_all().await;
+    while let Some(result) = tasks.join_next().await {
+        if let Err(e) = result {
+            eprintln!("Task failed: {}", e);
+        }
+    }
 
     Ok(())
 }

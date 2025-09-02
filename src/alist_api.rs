@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Ok, Result, anyhow};
+use anyhow::{Result, anyhow};
 use digest::{Digest, OutputSizeUser, generic_array::ArrayLength};
 use futures::stream::{self, StreamExt};
 use governor::{
@@ -234,7 +234,9 @@ pub(crate) struct EntryWithPath {
 
 static TPS_RATE_LIMITER: LazyLock<RateLimiter<NotKeyed, InMemoryState, DefaultClock>> =
     LazyLock::new(|| {
-        let quota = Quota::per_second(NonZeroU32::new(CONFIG.tpslimit).unwrap());
+        let quota = Quota::per_second(
+            NonZeroU32::new(CONFIG.tpslimit).unwrap_or_else(|| NonZeroU32::new(1).unwrap())
+        );
         RateLimiter::direct(quota)
     });
 
@@ -341,7 +343,7 @@ async fn process_folder_contents(
 
         // Attempt to get API response
         let api_response = match get_api_response(client, payload).await {
-            std::result::Result::Ok(response) => response,
+            Ok(response) => response,
             Err(err) => {
                 warn!("Request failed: {}", err);
                 retry_count += 1;
@@ -375,11 +377,11 @@ async fn process_folder_contents(
         match api_response.data {
             Some(ApiData::FoldersInfo(folders_info)) => {
                 // Skip if no content
-                if folders_info.content.is_none() {
+                let Some(content) = &folders_info.content else {
                     return Ok(());
-                }
+                };
 
-                for file in &folders_info.content.unwrap() {
+                for file in content {
                     let full_path = format!("{}/{}", current_path, file.name);
                     debug!("entry path: {}", full_path);
                     pb.set_message(format!("Scanning: {full_path}"));
@@ -499,7 +501,7 @@ pub(crate) async fn get_raw_url(client: &Client, entry: &EntryWithPath) -> Resul
 }
 
 pub(crate) async fn copy_metadata(
-    files_with_ext: &Vec<(String, &EntryWithPath)>,
+    files_with_ext: &[(String, &EntryWithPath)],
     output_path: &str,
     m_pb: MultiProgress,
     client: Arc<Client>,
@@ -520,9 +522,8 @@ pub(crate) async fn copy_metadata(
     })
     .progress_chars("#>-");
 
-    let pb = m_pb
-        .add(ProgressBar::new(files_copy.len() as u64))
-        .with_style(sty.clone());
+    let pb = m_pb.add(ProgressBar::new(files_copy.len() as u64));
+    pb.set_style(sty.clone());
 
     // Create a stream of futures.
     let tasks = stream::iter(files_copy.into_iter().map(|file| {
@@ -545,7 +546,7 @@ pub(crate) async fn copy_metadata(
                 &local_path,
                 &client,
                 file.1.entry.hash_info.clone(),
-                m_clone.clone(),
+                m_clone,
             )
             .await
             {
@@ -560,7 +561,7 @@ pub(crate) async fn copy_metadata(
 
     // Wait for all tasks to complete.
     tasks
-        .for_each(|res| async {
+        .for_each(|res: Result<()>| async {
             if let Err(e) = res {
                 // Optionally handle individual errors here.
                 warn!("Task failed with error: {}", e);
@@ -624,7 +625,7 @@ pub async fn download_file_with_retries(
         match attempt_download_file(raw_url, local_path, client, checksum.clone(), m_pb.clone())
             .await
         {
-            std::result::Result::Ok(_) => return Ok(()),
+            Ok(_) => return Ok(()),
             Err(e) if attempt < MAX_RETRIES => info!(
                 "Download attempt #{} for '{}' failed: {}. Retrying...",
                 attempt, raw_url, e
@@ -660,12 +661,13 @@ async fn attempt_download_file(
 ) -> Result<()> {
     debug!("Download to local file path: {}", local_path.display());
 
-    if let Some(checksum_obj) = checksum.clone() &&
-        checksum_obj
+    if let Some(ref checksum_obj) = checksum {
+        if checksum_obj
             .verify_file_checksum(local_path, m_pb.clone())
             .await?
-    {
-        return Ok(());
+        {
+            return Ok(());
+        }
     }
 
     // Send GET Request
@@ -720,7 +722,7 @@ async fn attempt_download_file(
 }
 
 pub(crate) async fn create_strm_file(
-    files_with_ext: &Vec<(String, &EntryWithPath)>,
+    files_with_ext: &[(String, &EntryWithPath)],
     output_path: &str,
     m_pb: MultiProgress,
     client: Arc<Client>,
@@ -753,7 +755,7 @@ pub(crate) async fn create_strm_file(
 
             let parsed_url = Url::parse(&raw_url)
                 .map_err(|e| anyhow!("Failed to parse URL '{}': {}", raw_url, e))?;
-            Ok((parsed_url, local_path))
+            Ok::<(Url, PathBuf), anyhow::Error>((parsed_url, local_path))
         }
     }))
     .buffer_unordered(CONFIG.concurrent_limit);

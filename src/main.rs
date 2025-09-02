@@ -111,8 +111,8 @@ async fn remove_noexist_files(
             // Keep only items whose file name is NOT in `existing_files`
             // (i.e., we want to remove them because they're "non-existent" remotely)
             let file_path = entry.path();
-            let remote_path = match file_path.strip_prefix(local_path.clone()) {
-                Result::Ok(rel_path) => format!("/{}", rel_path.to_string_lossy()),
+            let remote_path = match file_path.strip_prefix(&local_path) {
+                Ok(rel_path) => format!("/{}", rel_path.to_string_lossy()),
                 Err(_) => return true, // if strip_prefix fails, keep the file
             };
             !existing_files.contains(&remote_path)
@@ -170,7 +170,7 @@ async fn main() -> Result<()> {
             let res = alist_api::get_path_structure(args.url_path.clone(), m_pb.clone(), client.clone()).await?;
 
             // get file extensions for further baking
-            let files_with_ext = res
+            let files_with_ext: Vec<_> = res
                 .iter()
                 .filter(|x| !x.entry.is_dir)
                 .filter_map(|x| {
@@ -189,11 +189,11 @@ async fn main() -> Result<()> {
                 .filter_map(|file| {
                     let path = Path::new(&file);
                     // Check if the file extension is valid
-                    if let Some(ext) = path.extension().and_then(|e| e.to_str()) &&
-                        alist_api::FILE_STRM.contains(&ext)
-                    {
-                        // Replace the file's extension with "strm"
-                        return path.with_extension("strm").to_str().map(String::from);
+                    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                        if alist_api::FILE_STRM.contains(&ext) {
+                            // Replace the file's extension with "strm"
+                            return path.with_extension("strm").to_str().map(String::from);
+                        }
                     }
                     Some(file)
                 })
