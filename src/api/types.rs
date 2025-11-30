@@ -111,7 +111,7 @@ pub struct ApiResponse {
 }
 
 /// Entry combined with its full path information
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EntryWithPath {
     pub entry: EntryInfo,
     pub path_str: String,
