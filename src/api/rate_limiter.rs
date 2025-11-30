@@ -10,16 +10,13 @@ use governor::{
 };
 use reqwest::Client;
 
-use crate::CONFIG;
-
-/// Request timeout in seconds
-const REQ_TIMEOUT: u64 = 5;
+use crate::get_config;
 
 /// Global rate limiter instance
 static TPS_RATE_LIMITER: LazyLock<RateLimiter<NotKeyed, InMemoryState, DefaultClock>> =
     LazyLock::new(|| {
         let quota = Quota::per_second(
-            NonZeroU32::new(CONFIG.tpslimit).unwrap_or_else(|| NonZeroU32::new(1).unwrap()),
+            NonZeroU32::new(get_config().tpslimit).unwrap_or_else(|| NonZeroU32::new(1).unwrap()),
         );
         RateLimiter::direct(quota)
     });
@@ -47,9 +44,11 @@ pub async fn rate_limited_request<T>(
 where
     T: serde::Serialize,
 {
+    let timeout_secs = get_config().timeout;
+
     // Wait until we're allowed to make a request
     tokio::time::timeout(
-        Duration::from_secs(REQ_TIMEOUT),
+        Duration::from_secs(timeout_secs),
         TPS_RATE_LIMITER.until_ready(),
     )
     .await
@@ -58,9 +57,9 @@ where
     // Now make the request
     let response = client
         .post(url)
-        .timeout(Duration::from_secs(REQ_TIMEOUT))
+        .timeout(Duration::from_secs(timeout_secs))
         .json(&payload)
-        .header("Authorization", &CONFIG.token)
+        .header("Authorization", &get_config().token)
         .header("Content-Type", "application/json")
         .send()
         .await?;
@@ -83,16 +82,22 @@ where
 ///
 /// Returns an error if the rate limiter times out or the request fails
 pub async fn rate_limited_get(client: &Client, url: &str) -> Result<reqwest::Response> {
+    let timeout_secs = get_config().timeout;
+
     // Wait until we're allowed to make a request
     tokio::time::timeout(
-        Duration::from_secs(REQ_TIMEOUT),
+        Duration::from_secs(timeout_secs),
         TPS_RATE_LIMITER.until_ready(),
     )
     .await
     .map_err(|_| anyhow!("Rate limiter timeout"))?;
 
     // Now make the request
-    let response = client.get(url).send().await?;
+    let response = client
+        .get(url)
+        .timeout(Duration::from_secs(timeout_secs))
+        .send()
+        .await?;
 
     Ok(response)
 }
