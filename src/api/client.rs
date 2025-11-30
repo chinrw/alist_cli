@@ -16,13 +16,16 @@ use super::{
     rate_limiter::rate_limited_request,
     types::{ApiData, ApiResponse, EntryWithPath, FileInfoRequest},
 };
-use crate::CONFIG;
+use crate::get_config;
 
 /// Maximum number of retry attempts for failed requests
 const MAX_RETRIES: u32 = 3;
 
-/// Delay between retry attempts in milliseconds
-const RETRY_DELAY_MS: u64 = 1000;
+/// Initial delay for exponential backoff in milliseconds
+const INITIAL_BACKOFF_MS: u64 = 500;
+
+/// Maximum backoff delay in milliseconds
+const MAX_BACKOFF_MS: u64 = 10000;
 
 /// Retrieves the complete directory structure from the Alist server.
 ///
@@ -78,7 +81,7 @@ pub async fn get_path_structure(
 async fn get_api_response(client: &Client, payload: &FileInfoRequest) -> Result<ApiResponse> {
     let response = rate_limited_request(
         client,
-        format!("{}/api/fs/list", CONFIG.server_address),
+        format!("{}/api/fs/list", get_config().server_address),
         payload,
     )
     .await?;
@@ -129,11 +132,16 @@ async fn process_folder_contents(
     while retry_count <= MAX_RETRIES {
         // Break early if this is a retry attempt
         if retry_count > 0 {
-            info!(
-                "Retrying request for path {} ({}/{})",
-                current_path, retry_count, MAX_RETRIES
+            // Calculate exponential backoff delay
+            let backoff_ms = std::cmp::min(
+                INITIAL_BACKOFF_MS * 2_u64.pow(retry_count - 1),
+                MAX_BACKOFF_MS,
             );
-            tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
+            info!(
+                "Retrying request for path {} ({}/{}) in {}ms",
+                current_path, retry_count, MAX_RETRIES, backoff_ms
+            );
+            tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
         }
 
         // Attempt to get API response
@@ -245,6 +253,7 @@ async fn fetch_folder_contents(
             .unwrap();
     let pb = m_pb.add(ProgressBar::new_spinner());
     pb.set_style(spinner_style.clone());
+    pb.enable_steady_tick(Duration::from_millis(100));
 
     // Process the directories iteratively using a queue
     while let Some(current_path) = directories_to_process.pop_front() {
