@@ -1,17 +1,8 @@
-mod api;
-mod download;
-mod tracing_bridge;
-mod utils;
-
-pub use std::{
-    collections::HashSet,
-    path::{Path, PathBuf},
-};
+use alist_cli::*;
 
 use anyhow::Result;
 use clap::Parser;
 use indicatif::MultiProgress;
-use std::sync::LazyLock;
 use tokio::fs;
 use tracing::{info, trace};
 use tracing_bridge::MakeSuspendingWriter;
@@ -49,6 +40,10 @@ struct Cli {
     )]
     tpslimit: u32,
 
+    /// Request timeout in seconds
+    #[arg(long, global = true, default_value_t = 10)]
+    timeout: u64,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -74,25 +69,6 @@ enum Commands {
     },
 }
 
-pub struct Config {
-    pub server_address: String,
-    pub threads: usize,
-    pub token: String,
-    pub tpslimit: u32,
-    pub concurrent_limit: usize,
-}
-
-static CONFIG: LazyLock<Config> = LazyLock::new(|| {
-    let cli = Cli::parse();
-    Config {
-        server_address: cli.server_address,
-        threads: cli.threads,
-        token: cli.token,
-        tpslimit: cli.tpslimit,
-        concurrent_limit: std::cmp::max(cli.threads, 10), // Default to max of threads or 10
-    }
-});
-
 async fn remove_noexist_files(
     local_path: String,
     url_path: String,
@@ -101,7 +77,7 @@ async fn remove_noexist_files(
 ) -> Result<()> {
     // The realpath on the filesystem
     info!("Start to remove non-existent files");
-    let folder_path = std::path::Path::new(&local_path).join(&url_path.trim_start_matches('/'));
+    let folder_path = std::path::Path::new(&local_path).join(url_path.trim_start_matches('/'));
 
     trace!("folder_path {}", folder_path.display());
     let iter = WalkDir::new(&folder_path)
@@ -146,6 +122,19 @@ async fn remove_noexist_files(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Parse CLI arguments and initialize global CONFIG
+    let args = Cli::parse();
+    CONFIG
+        .set(Config {
+            server_address: args.server_address.clone(),
+            threads: args.threads,
+            token: args.token.clone(),
+            tpslimit: args.tpslimit,
+            concurrent_limit: std::cmp::max(args.threads, 10), // Min 10 for buffer_unordered operations
+            timeout: args.timeout,
+        })
+        .expect("CONFIG already initialized");
+
     let m_pb = MultiProgress::new();
     // let wrapper = tracing_bridge::TracingWrapper::new(m_pb.clone());
 
@@ -163,43 +152,50 @@ async fn main() -> Result<()> {
 
     tracing::subscriber::set_global_default(subscriber)?;
 
-    let args = Cli::parse();
-
     match args.command {
         Commands::AutoSym { local_path, delete } => {
             let client = std::sync::Arc::new(reqwest::Client::builder().no_proxy().build()?);
-            let res = api::get_path_structure(args.url_path.clone(), m_pb.clone(), client.clone())
-                .await?;
+            let res =
+                api::get_path_structure(args.url_path.clone(), m_pb.clone(), Arc::clone(&client))
+                    .await?;
 
-            // get file extensions for further baking
-            let files_with_ext: Vec<_> = res
-                .iter()
-                .filter(|x| !x.entry.is_dir)
-                .filter_map(|x| {
-                    Path::new(&x.path_str)
-                        .extension()
-                        .and_then(|ext| ext.to_str())
-                        .map(|ext_str| (ext_str.to_owned(), x))
-                })
-                .collect();
+            // Single pass: collect files with extensions AND build the final files_set
+            let mut files_with_ext: Vec<(String, &api::EntryWithPath)> = Vec::new();
+            let mut files_set = HashSet::with_capacity(res.len());
 
-            api::copy_metadata(&files_with_ext, &local_path, m_pb.clone(), client.clone()).await?;
+            for entry in &res {
+                if entry.entry.is_dir {
+                    continue;
+                }
+
+                let path = Path::new(&entry.path_str);
+
+                // Extract extension and add to files_with_ext if present
+                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                    files_with_ext.push((ext.to_owned(), entry));
+
+                    // Build files_set: replace extension with "strm" if streamable, otherwise keep
+                    // original
+                    let final_path = if api::FILE_STRM.contains(&ext) {
+                        path.with_extension("strm").to_string_lossy().into_owned()
+                    } else {
+                        entry.path_str.clone()
+                    };
+                    files_set.insert(final_path);
+                } else {
+                    // No extension, just add the path as-is
+                    files_set.insert(entry.path_str.clone());
+                }
+            }
+
+            api::copy_metadata(
+                &files_with_ext,
+                &local_path,
+                m_pb.clone(),
+                Arc::clone(&client),
+            )
+            .await?;
             api::create_strm_file(&files_with_ext, &local_path, m_pb, client).await?;
-            let files_set: HashSet<String> = res
-                .into_iter()
-                .map(|s| s.path_str)
-                .filter_map(|file| {
-                    let path = Path::new(&file);
-                    // Check if the file extension is valid
-                    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                        if api::FILE_STRM.contains(&ext) {
-                            // Replace the file's extension with "strm"
-                            return path.with_extension("strm").to_str().map(String::from);
-                        }
-                    }
-                    Some(file)
-                })
-                .collect();
 
             remove_noexist_files(local_path, args.url_path, &files_set, delete).await?;
         }

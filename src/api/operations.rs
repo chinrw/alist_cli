@@ -16,7 +16,10 @@ use super::{
         ApiData, ApiResponse, EntryWithPath, FileInfoRequest, is_metadata_file, is_streamable_file,
     },
 };
-use crate::{CONFIG, utils::file_ops::download_file_with_retries};
+use crate::{
+    get_config,
+    utils::file_ops::{download_file_with_retries, ensure_parent_dir},
+};
 
 /// Gets the raw download URL for a given file entry.
 ///
@@ -45,7 +48,7 @@ pub async fn get_raw_url(client: &Client, entry: &EntryWithPath) -> Result<Strin
     trace!("metadata current payload:{:?}", payload);
     let response = rate_limited_request(
         client,
-        format!("{}/api/fs/get", CONFIG.server_address),
+        format!("{}/api/fs/get", get_config().server_address),
         payload,
     )
     .await?;
@@ -107,11 +110,12 @@ pub async fn copy_metadata(
 
     let pb = m_pb.add(ProgressBar::new(files_copy.len() as u64));
     pb.set_style(sty.clone());
+    pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
     // Create a stream of futures
     let tasks = stream::iter(files_copy.into_iter().map(|file| {
         // Clone necessary values for the async block
-        let client = client.clone();
+        let client = Arc::clone(&client);
         let pb = pb.clone();
         let m_clone = m_pb.clone();
         let output_path = output_path.to_string();
@@ -140,7 +144,7 @@ pub async fn copy_metadata(
             Ok(())
         }
     }))
-    .buffer_unordered(CONFIG.concurrent_limit);
+    .buffer_unordered(get_config().concurrent_limit);
 
     // Wait for all tasks to complete
     tasks
@@ -197,6 +201,7 @@ pub async fn create_strm_file(
         })
         .progress_chars("#>-"),
     );
+    pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
     info!("Start to create strm files");
     let mut results = stream::iter(files_strm.map(|f| {
@@ -213,16 +218,12 @@ pub async fn create_strm_file(
             Ok::<(Url, PathBuf), anyhow::Error>((parsed_url, local_path))
         }
     }))
-    .buffer_unordered(CONFIG.concurrent_limit);
+    .buffer_unordered(get_config().concurrent_limit);
 
     while let Some(result) = results.next().await {
         let (raw_url, local_path) = result?;
 
-        if let Some(parent_dir) = local_path.parent() {
-            if !parent_dir.exists() {
-                fs::create_dir_all(parent_dir).await?;
-            }
-        }
+        ensure_parent_dir(&local_path).await?;
         fs::write(&local_path, raw_url.as_str()).await?;
         pb.inc(1);
     }

@@ -8,6 +8,29 @@ use reqwest::Client;
 use tokio::fs;
 use tracing::{debug, info};
 
+/// Ensures the parent directory of a file path exists, creating it if
+/// necessary.
+///
+/// # Arguments
+///
+/// * `path` - The file path whose parent directory should exist
+///
+/// # Returns
+///
+/// Success if the parent directory exists or was created
+///
+/// # Errors
+///
+/// Returns an error if directory creation fails
+pub async fn ensure_parent_dir(path: &Path) -> Result<()> {
+    if let Some(parent_dir) = path.parent() &&
+        !parent_dir.exists()
+    {
+        fs::create_dir_all(parent_dir).await?;
+    }
+    Ok(())
+}
+
 use crate::api::{
     rate_limiter::rate_limited_get,
     types::{EntryWithPath, HashObject},
@@ -15,6 +38,12 @@ use crate::api::{
 
 /// Maximum number of retry attempts for downloads
 const MAX_RETRIES: u32 = 3;
+
+/// Initial delay for exponential backoff in milliseconds
+const INITIAL_BACKOFF_MS: u64 = 500;
+
+/// Maximum backoff delay in milliseconds
+const MAX_BACKOFF_MS: u64 = 10000;
 
 /// Downloads a file with retry logic and optional checksum verification.
 ///
@@ -45,10 +74,16 @@ pub async fn download_file_with_retries(
             .await
         {
             Ok(_) => return Ok(()),
-            Err(e) if attempt < MAX_RETRIES => info!(
-                "Download attempt #{} for '{}' failed: {}. Retrying...",
-                attempt, raw_url, e
-            ),
+            Err(e) if attempt < MAX_RETRIES => {
+                // Calculate exponential backoff delay
+                let backoff_ms =
+                    std::cmp::min(INITIAL_BACKOFF_MS * 2_u64.pow(attempt - 1), MAX_BACKOFF_MS);
+                info!(
+                    "Download attempt #{} for '{}' failed: {}. Retrying in {}ms...",
+                    attempt, raw_url, e, backoff_ms
+                );
+                tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
+            }
 
             Err(e) => {
                 return Err(anyhow!(
@@ -106,13 +141,12 @@ async fn attempt_download_file(
 ) -> Result<()> {
     debug!("Download to local file path: {}", local_path.display());
 
-    if let Some(ref checksum_obj) = checksum {
-        if checksum_obj
+    if let Some(checksum_obj) = &checksum &&
+        checksum_obj
             .verify_file_checksum(local_path, m_pb.clone())
             .await?
-        {
-            return Ok(());
-        }
+    {
+        return Ok(());
     }
 
     // Send GET Request
@@ -130,11 +164,7 @@ async fn attempt_download_file(
     }
 
     // Ensure the parent directory exists
-    if let Some(parent_dir) = local_path.parent() {
-        if !parent_dir.exists() {
-            fs::create_dir_all(parent_dir).await?;
-        }
-    }
+    ensure_parent_dir(local_path).await?;
 
     // Create or truncate the file
     let mut file = fs::OpenOptions::new()
@@ -152,7 +182,7 @@ async fn attempt_download_file(
     }
 
     // Verify the file checksum (if provided)
-    if let Some(checksum_obj) = checksum.clone() {
+    if let Some(checksum_obj) = &checksum {
         let verified = checksum_obj
             .verify_file_checksum(local_path, m_pb.clone())
             .await?;
