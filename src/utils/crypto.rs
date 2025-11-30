@@ -57,6 +57,7 @@ impl HashObject {
                 })
                 .progress_chars("#>-"),
             );
+            pb.enable_steady_tick(std::time::Duration::from_millis(100));
             pb
         } else {
             // Create a hidden/dummy progress bar when in debug mode
@@ -68,7 +69,7 @@ impl HashObject {
 
         let mut total_read = 0;
 
-        let mut buffer = [0u8; 8192];
+        let mut buffer = [0u8; 65536]; // 64KB buffer for better I/O performance
         let mut hasher = D::new();
         // Read the file in chunks
         loop {
